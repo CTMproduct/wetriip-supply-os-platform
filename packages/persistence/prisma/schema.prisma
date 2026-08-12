@@ -1,0 +1,1642 @@
+// ═══════════════════════════════════════════════════════════════════════
+//  WETRIIP SUPPLY OS — Canonical data model
+//
+//  Layout follows the three planes:
+//    platform/  identity, audit, outbox
+//    core/      catalog, ari, effective, commercial, search, booking
+//    agent/     agent control plane
+//
+//  Non-negotiable invariants encoded here:
+//   · ARI is an append-only ledger with provenance + idempotency,
+//     never a mutable row (AriEvent).
+//   · External and Managed are SEPARATE layers (AriCell.layer);
+//     Effective is a computed projection (EffectiveAri), never a source.
+//   · Contractual adjustments are applied when building an Offer,
+//     never written back into the ARI ledger.
+//   · Every agent action is a first-class, versioned, reversible record.
+// ═══════════════════════════════════════════════════════════════════════
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// IDENTITY & TENANCY
+// ─────────────────────────────────────────────────────────────
+
+model Tenant {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  createdAt DateTime @default(now())
+
+  organizations Organization[]
+  properties    Property[]
+  users         User[]
+}
+
+enum OrgType {
+  HOTEL
+  CHAIN
+  DMC
+  WHOLESALER
+  AGENCY
+  OTA
+  CORPORATE
+  TOUR_OPERATOR
+  PLATFORM
+}
+
+enum OrgStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING
+}
+
+model Organization {
+  id                   String    @id @default(cuid())
+  tenantId             String
+  code                 String
+  name                 String
+  legalName            String?
+  type                 OrgType
+  country              String
+  defaultCurrency      String    @default("USD")
+  defaultCommissionPct Decimal   @default(0) @db.Decimal(6, 3)
+  status               OrgStatus @default(ACTIVE)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  tenant            Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  users             User[]
+  properties        Property[]
+  supplierContracts Contract[]      @relation("SupplierOrg")
+  buyerContracts    Contract[]      @relation("BuyerOrg")
+  partnerProfile    PartnerProfile?
+
+  @@unique([tenantId, code])
+  @@index([tenantId, type])
+}
+
+/// A hotel is not one person. Each of these is a real job with different
+/// authority; the permission bundles live in @wetriip/contracts.
+enum Role {
+  /// The hotel's own administrator: owns who else gets in.
+  GENERAL_MANAGER
+  HOTEL_OWNER
+  REVENUE_MANAGER
+  /// Analysis and opportunity spotting. Proposes; does not execute.
+  ECOMMERCE
+  RESERVATION_AGENT
+  FINANCE
+  CONNECTIVITY_ADMIN
+  AGENCY_ADMIN
+  SUPPORT
+  SUPER_ADMIN
+}
+
+enum UserStatus {
+  INVITED
+  ACTIVE
+  DISABLED
+}
+
+model User {
+  id             String     @id @default(cuid())
+  tenantId       String
+  organizationId String
+  email          String
+  name           String
+  jobTitle       String?
+  role           Role
+  status         UserStatus @default(ACTIVE)
+  active         Boolean    @default(true)
+
+  /// Permissions beyond the role bundle, granted to this person specifically.
+  grants      String[]
+  /// Permissions taken away from the role bundle. Revocation always wins.
+  revokes     String[]
+  /// Property scope. Empty means every property in their organization.
+  /// Scope is deliberately separate from permission: WHAT you may do versus
+  /// WHICH properties you may do it to.
+  propertyIds String[]
+
+  // Agent autonomy ceiling for THIS user. The agent can never exceed
+  // the invoking user's own permissions (AI permission != user permission).
+  maxAutonomy  Int       @default(2)
+  invitedBy    String?
+  lastActiveAt DateTime?
+  disabledAt   DateTime?
+  disabledBy   String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @default(now()) @updatedAt
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, email])
+  @@index([organizationId, status])
+}
+
+// ─────────────────────────────────────────────────────────────
+// CATALOG
+// ─────────────────────────────────────────────────────────────
+
+enum PropertyStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  SUSPENDED
+}
+
+model Property {
+  id             String         @id @default(cuid())
+  tenantId       String
+  organizationId String
+  code           String
+  name           String
+  city           String
+  country        String
+  timezone       String         @default("America/Bogota")
+  currency       String         @default("COP")
+  stars          Int?
+  status         PropertyStatus @default(DRAFT)
+  approvedAt     DateTime?
+  approvedBy     String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  roomTypes      RoomType[]
+  ratePlans      RatePlan[]
+  connections    Connection[]
+  promotions     Promotion[]
+  taxes          TaxRule[]
+  content        PropertyContent[]
+  images         PropertyImage[]
+  contentSources ContentSource[]
+  distribution   DistributionPolicy?
+
+  @@unique([tenantId, code])
+  @@index([tenantId, status])
+}
+
+model RoomType {
+  id           String  @id @default(cuid())
+  propertyId   String
+  code         String
+  name         String
+  maxOccupancy Int     @default(2)
+  maxAdults    Int     @default(2)
+  maxChildren  Int     @default(0)
+  quantity     Int     @default(0)
+  active       Boolean @default(true)
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@unique([propertyId, code])
+}
+
+enum CatalogSource {
+  EXTERNAL
+  MANAGED
+}
+
+model RatePlan {
+  id              String        @id @default(cuid())
+  propertyId      String
+  code            String
+  name            String
+  mealPlan        String        @default("RO")
+  currency        String
+  source          CatalogSource @default(EXTERNAL)
+  refundable      Boolean       @default(true)
+  cancellationDsl Json?
+  active          Boolean       @default(true)
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@unique([propertyId, code])
+}
+
+model TaxRule {
+  id         String   @id @default(cuid())
+  propertyId String
+  code       String
+  name       String
+  // PERCENTAGE | FIXED_PER_NIGHT | FIXED_PER_STAY
+  mode       String
+  value      Decimal  @db.Decimal(12, 4)
+  currency   String?
+  included   Boolean  @default(false)
+  appliesTo  String   @default("ALL")
+  createdAt  DateTime @default(now())
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@unique([propertyId, code])
+}
+
+// ─────────────────────────────────────────────────────────────
+// PROPERTY CONTENT  (photos, descriptions, amenities, policies)
+//
+// Content gets the SAME layering discipline as ARI, for the same reason:
+// an import must never silently overwrite what a hotel wrote about itself.
+//   EXTERNAL  = imported from a content source, with provenance
+//   MANAGED   = written by the hotel in the extranet
+//   Effective = computed field by field, MANAGED winning
+// ─────────────────────────────────────────────────────────────
+
+enum ContentLayer {
+  EXTERNAL
+  MANAGED
+}
+
+enum ContentSourceKind {
+  MANUAL
+  CANONICAL_JSON
+  BOOKING
+  EXPEDIA
+  GIATA
+  GIMMONIX
+  CHANNEL_MANAGER
+}
+
+/// One layer of a property content record. EXTERNAL and MANAGED coexist.
+model PropertyContent {
+  id         String            @id @default(cuid())
+  tenantId   String
+  propertyId String
+  layer      ContentLayer
+  /// Which source produced this layer. MANUAL for the hotel own edits.
+  source     ContentSourceKind @default(MANUAL)
+  locale     String            @default("es")
+
+  descriptionShort String?
+  descriptionLong  String?
+  /// Points the hotel wants surfaced first.
+  highlights       String[]
+
+  addressLine1 String?
+  addressLine2 String?
+  postalCode   String?
+  latitude     Float?
+  longitude    Float?
+  phone        String?
+  email        String?
+  website      String?
+
+  checkInFrom String?
+  checkInTo   String?
+  checkOutBy  String?
+
+  /// Canonical amenity codes, not free text, so they stay filterable.
+  amenities String[]
+  /// Narrative policies: pets, children, smoking, extra beds.
+  policies  Json?
+  /// Anything the source sent that we do not model yet. Never discarded.
+  raw       Json?
+
+  version         Int       @default(1)
+  sourceReference String?
+  sourceUpdatedAt DateTime?
+  receivedAt      DateTime  @default(now())
+  updatedBy       String?
+  updatedAt       DateTime  @updatedAt
+  createdAt       DateTime  @default(now())
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@unique([propertyId, layer, locale])
+  @@index([tenantId, propertyId])
+}
+
+enum ImageCategory {
+  EXTERIOR
+  LOBBY
+  ROOM
+  BATHROOM
+  RESTAURANT
+  POOL
+  SPA
+  MEETING
+  BEACH
+  VIEW
+  OTHER
+}
+
+model PropertyImage {
+  id         String            @id @default(cuid())
+  tenantId   String
+  propertyId String
+  roomTypeId String?
+  layer      ContentLayer      @default(MANAGED)
+  source     ContentSourceKind @default(MANUAL)
+
+  url          String
+  thumbnailUrl String?
+  caption      String?
+  category     ImageCategory @default(OTHER)
+  width        Int?
+  height       Int?
+  /// Display order within the category. Lower first.
+  position     Int           @default(0)
+  isHero       Boolean       @default(false)
+  active       Boolean       @default(true)
+
+  /// Who owns this image and under what terms. An imported photo carries
+  /// someone else licence; publishing it without knowing that is a real legal
+  /// exposure, so imported layers must carry these fields.
+  credit          String?
+  licence         String?
+  sourceReference String?
+  checksum        String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId, category, position])
+  @@index([tenantId, propertyId])
+}
+
+/// A configured content feed for a property.
+model ContentSource {
+  id             String            @id @default(cuid())
+  tenantId       String
+  propertyId     String
+  kind           ContentSourceKind
+  displayName    String
+  /// Vault reference. Never the credential itself.
+  credentialsRef String?
+  /// Provider-side identifier for this hotel: Booking hotel id, GIATA id.
+  externalId     String?
+  enabled        Boolean           @default(false)
+  lastSyncAt     DateTime?
+  lastSyncOk     Boolean?
+  lastSyncDetail String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@unique([propertyId, kind])
+  @@index([tenantId, enabled])
+}
+
+// ─────────────────────────────────────────────────────────────
+// DISTRIBUTION POLICY  (who may see this hotel at all)
+//
+// Distinct from a contract. A contract says "these are our terms with this
+// buyer". A distribution policy says "this hotel is open to the marketplace"
+// or "only to these three wholesalers, and only for these markets". The hotel
+// owns it, and it is evaluated before any contract is considered.
+// ─────────────────────────────────────────────────────────────
+
+enum DistributionMode {
+  /// Visible to every buyer with an active contract.
+  MARKETPLACE_OPEN
+  /// Visible only to explicitly allowed organizations.
+  SELECTED_PARTNERS
+  /// Not distributed at all. Inventory stays private.
+  CLOSED
+}
+
+model DistributionPolicy {
+  id         String           @id @default(cuid())
+  tenantId   String
+  propertyId String           @unique
+  mode       DistributionMode @default(MARKETPLACE_OPEN)
+
+  /// Buyer market allow and deny lists, ISO-3166 alpha-2. Empty allow = all.
+  allowedMarkets      String[]
+  blockedMarkets      String[]
+  /// Organization ids. Used when mode is SELECTED_PARTNERS, and as an override
+  /// blocklist under MARKETPLACE_OPEN.
+  allowedPartnerIds   String[]
+  blockedPartnerIds   String[]
+  /// Which organization types may see it: WHOLESALER, AGENCY, OTA, CORPORATE.
+  allowedPartnerTypes String[]
+  allowedChannels     String[]
+
+  /// Commercial floors the hotel imposes on anyone in the marketplace.
+  minAdvanceDays Int?
+  maxAdvanceDays Int?
+  minLos         Int?
+  /// Refuse distribution below this net rate, whatever a contract says.
+  floorRate      Decimal? @db.Decimal(14, 4)
+  floorCurrency  String?
+
+  requiresApproval Boolean  @default(false)
+  note             String?
+  updatedBy        String?
+  version          Int      @default(1)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, mode])
+}
+
+// ─────────────────────────────────────────────────────────────
+// PARTNER PROFILE AND CREDIT  (the demand side, parametrized)
+// ─────────────────────────────────────────────────────────────
+
+enum PartnerStatus {
+  PENDING
+  ACTIVE
+  ON_HOLD
+  SUSPENDED
+}
+
+enum PaymentTerms {
+  PREPAY
+  NET_7
+  NET_15
+  NET_30
+  NET_45
+  NET_60
+  ON_ARRIVAL
+}
+
+/// Everything a wholesaler or agency needs to be transacted with: a stable
+/// public code, a tax identity, billing details and a credit line.
+model PartnerProfile {
+  id             String        @id @default(cuid())
+  tenantId       String
+  organizationId String        @unique
+  /// Stable, quotable identifier. It appears on bookings and invoices and
+  /// never changes once issued.
+  partnerCode    String
+  status         PartnerStatus @default(PENDING)
+
+  legalName   String
+  /// NIT, RFC, CUIT, VAT, EIN. The scheme matters as much as the number.
+  taxIdScheme String?
+  taxId       String?
+  taxCountry  String?
+
+  billingEmail   String?
+  billingAddress String?
+  billingCity    String?
+  billingCountry String?
+  contactName    String?
+  contactPhone   String?
+
+  /// Markets this partner actually sells from. Drives eligibility and the
+  /// outbound and inbound view.
+  sourceMarkets String[]
+  iataCode      String?
+  memberships   String[]
+
+  paymentTerms     PaymentTerms @default(PREPAY)
+  currency         String       @default("USD")
+  creditLimit      Decimal      @default(0) @db.Decimal(14, 2)
+  /// Outstanding exposure. Maintained by CreditEntry, never edited directly.
+  creditUsed       Decimal      @default(0) @db.Decimal(14, 2)
+  /// Soft stop before the hard limit, so nobody is surprised at 100 percent.
+  creditWarningPct Int          @default(80)
+
+  onboardedAt DateTime?
+  notes       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  creditEntries CreditEntry[]
+
+  @@unique([tenantId, partnerCode])
+  @@index([tenantId, status])
+}
+
+enum CreditEntryType {
+  HOLD
+  RELEASE
+  CHARGE
+  PAYMENT
+  ADJUSTMENT
+}
+
+/// Append-only credit ledger. PartnerProfile.creditUsed is its running total
+/// and only ever moves by writing an entry here. A credit balance you can set
+/// by hand is a credit balance nobody trusts.
+model CreditEntry {
+  id            String          @id @default(cuid())
+  tenantId      String
+  partnerId     String
+  type          CreditEntryType
+  amount        Decimal         @db.Decimal(14, 2)
+  currency      String
+  /// Running balance AFTER this entry, so any row is auditable on its own.
+  balanceAfter  Decimal         @db.Decimal(14, 2)
+  bookingId     String?
+  reference     String?
+  reason        String?
+  actorId       String?
+  correlationId String
+  createdAt     DateTime        @default(now())
+
+  partner PartnerProfile @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+
+  @@index([partnerId, createdAt])
+  @@index([tenantId, bookingId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// DEMAND INTELLIGENCE
+// ─────────────────────────────────────────────────────────────
+
+/// One row per property that entered a search. This is the difference between
+/// knowing "there were 2,400 searches" and knowing "Mayorista MX looked at
+/// YOUR hotel 2,400 times and never booked".
+model SearchImpression {
+  id                 String   @id @default(cuid())
+  tenantId           String
+  searchId           String
+  propertyId         String
+  buyerOrgId         String
+  /// Market the buyer sells from: the outbound side.
+  sourceMarket       String
+  /// Where the property is: the inbound side.
+  destinationCountry String
+  destinationCity    String
+  checkIn            DateTime @db.Date
+  nights             Int
+  adults             Int
+  rooms              Int
+  /// Did this property produce a sellable offer for this search?
+  offered            Boolean  @default(false)
+  offerCount         Int      @default(0)
+  lowestRate         Decimal? @db.Decimal(14, 4)
+  currency           String?
+  /// When it produced nothing, WHY: the predicate codes that failed.
+  blockedBy          String[]
+  createdAt          DateTime @default(now())
+
+  @@index([tenantId, propertyId, createdAt])
+  @@index([tenantId, buyerOrgId, createdAt])
+  @@index([tenantId, sourceMarket, destinationCountry, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// CONNECTIVITY  (source plane: Channel Manager <-> Wetriip)
+// ─────────────────────────────────────────────────────────────
+
+enum Provider {
+  MOCK_CM
+  CANONICAL_JSON
+  SITEMINDER
+  DINGUS
+  CLOUDBEDS
+  DERBYSOFT
+}
+
+enum TransportMode {
+  PUSH
+  PULL
+  BOTH
+}
+
+enum ConnectionStatus {
+  PENDING
+  ACTIVE
+  PAUSED
+  ERROR
+}
+
+model Connection {
+  id               String           @id @default(cuid())
+  tenantId         String
+  propertyId       String
+  provider         Provider
+  displayName      String
+  mode             TransportMode    @default(BOTH)
+  status           ConnectionStatus @default(PENDING)
+  // Reference into a secrets vault. NEVER the secret itself.
+  credentialsRef   String?
+  webhookSecret    String?
+  checkpoint       Json?
+  lastHealthAt     DateTime?
+  lastHealthOk     Boolean?
+  lastHealthDetail String?
+  lastEventAt      DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  property        Property         @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  mappingVersions MappingVersion[]
+  envelopes       RawEnvelope[]
+
+  @@index([tenantId, status])
+  @@index([propertyId])
+}
+
+enum MappingStatus {
+  DRAFT
+  PENDING_APPROVAL
+  ACTIVE
+  RETIRED
+}
+
+model MappingVersion {
+  id           String        @id @default(cuid())
+  connectionId String
+  version      Int
+  status       MappingStatus @default(DRAFT)
+  note         String?
+  createdBy    String?
+  approvedBy   String?
+  publishedAt  DateTime?
+  retiredAt    DateTime?
+  createdAt    DateTime      @default(now())
+
+  connection Connection     @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  entries    MappingEntry[]
+
+  @@unique([connectionId, version])
+  @@index([connectionId, status])
+}
+
+enum MappedEntity {
+  PROPERTY
+  ROOM_TYPE
+  RATE_PLAN
+}
+
+model MappingEntry {
+  id               String       @id @default(cuid())
+  mappingVersionId String
+  entityType       MappedEntity
+  remoteCode       String
+  remoteName       String?
+  localPropertyId  String?
+  localRoomTypeId  String?
+  localRatePlanId  String?
+
+  mappingVersion MappingVersion @relation(fields: [mappingVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([mappingVersionId, entityType, remoteCode])
+}
+
+enum EnvelopeOutcome {
+  ACCEPTED
+  PARTIAL
+  REJECTED
+  DUPLICATE
+}
+
+/// Raw supplier payload, persisted before any interpretation.
+/// This is what lets us replay history and prove what a partner sent.
+model RawEnvelope {
+  id             String          @id @default(cuid())
+  connectionId   String
+  direction      String          @default("INBOUND")
+  receivedAt     DateTime        @default(now())
+  payload        Json
+  payloadHash    String
+  idempotencyKey String?
+  correlationId  String
+  signatureValid Boolean         @default(false)
+  outcome        EnvelopeOutcome @default(ACCEPTED)
+  rejectReason   String?
+  eventCount     Int             @default(0)
+
+  connection Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([connectionId, receivedAt])
+  @@index([correlationId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// ARI — append-only event ledger  (§7 of the architecture)
+// ─────────────────────────────────────────────────────────────
+
+enum AriLayer {
+  EXTERNAL
+  MANAGED
+}
+
+enum AriEventType {
+  RATE_UPDATED
+  AVAILABILITY_UPDATED
+  RESTRICTION_UPDATED
+  FULL_SYNC
+}
+
+enum AriEventStatus {
+  ACCEPTED
+  REJECTED
+  DUPLICATE
+  OUT_OF_ORDER
+}
+
+/// APPEND-ONLY. Rows are never updated in place and never deleted.
+model AriEvent {
+  id             BigInt       @id @default(autoincrement())
+  tenantId       String
+  propertyId     String
+  roomTypeId     String
+  ratePlanId     String
+  stayDate       DateTime     @db.Date
+  occupancy      Int          @default(2)
+  layer          AriLayer
+  eventType      AriEventType
+  source         String
+  sourceSequence BigInt?
+
+  before Json?
+  after  Json
+
+  sourceTimestamp DateTime
+  receivedAt      DateTime  @default(now())
+  processedAt     DateTime?
+
+  payloadHash    String
+  idempotencyKey String         @unique
+  correlationId  String
+  mappingVersion Int?
+  rawEnvelopeId  String?
+  actorType      String         @default("CONNECTOR")
+  actorId        String?
+  reason         String?
+  status         AriEventStatus @default(ACCEPTED)
+  rejectReason   String?
+
+  @@index([tenantId, propertyId, stayDate])
+  @@index([propertyId, roomTypeId, ratePlanId, stayDate, layer])
+  @@index([correlationId])
+  @@index([receivedAt])
+}
+
+/// Current state PER LAYER, projected from the ledger.
+/// EXTERNAL is never overwritten by MANAGED — they coexist.
+model AriCell {
+  id         String   @id @default(cuid())
+  tenantId   String
+  propertyId String
+  roomTypeId String
+  ratePlanId String
+  stayDate   DateTime @db.Date
+  occupancy  Int      @default(2)
+  layer      AriLayer
+
+  allotment        Int?
+  available        Int?
+  sold             Int?
+  overbookingLimit Int?
+
+  currency    String?
+  baseAmount  Decimal? @db.Decimal(14, 4)
+  adultPrices Json?
+  childPrices Json?
+
+  open              Boolean?
+  stopSell          Boolean?
+  closedToArrival   Boolean?
+  closedToDeparture Boolean?
+
+  minLos      Int?
+  maxLos      Int?
+  releaseDays Int?
+  bookingGap  Int?
+
+  // Managed-layer governance
+  validFrom  DateTime?
+  validTo    DateTime?
+  reason     String?
+  approvedBy String?
+
+  version         Int      @default(1)
+  source          String
+  sourceTimestamp DateTime
+  /// Provider sequence of the event that last moved this cell, when the
+  /// provider offers one. Authoritative for ordering over sourceTimestamp.
+  sourceSequence  BigInt?
+  /// Hash of the values this cell currently holds. A resend of identical
+  /// content is a no-op even when its timestamp is newer — channel managers
+  /// republish full snapshots constantly and each one must not create a
+  /// spurious version bump and a spurious EffectiveARIChanged event.
+  lastPayloadHash String?
+  receivedAt      DateTime @default(now())
+  lastEventId     BigInt?
+  mappingVersion  Int?
+
+  @@unique([tenantId, propertyId, roomTypeId, ratePlanId, stayDate, occupancy, layer])
+  @@index([propertyId, stayDate])
+}
+
+/// Deterministic materialization: External + Managed -> Effective.
+/// Contractual/promotional adjustments are NOT applied here.
+model EffectiveAri {
+  id         String   @id @default(cuid())
+  tenantId   String
+  propertyId String
+  roomTypeId String
+  ratePlanId String
+  stayDate   DateTime @db.Date
+  occupancy  Int      @default(2)
+
+  currency          String?
+  baseAmount        Decimal? @db.Decimal(14, 4)
+  available         Int      @default(0)
+  open              Boolean  @default(false)
+  closedToArrival   Boolean  @default(false)
+  closedToDeparture Boolean  @default(false)
+  minLos            Int      @default(1)
+  maxLos            Int?
+  releaseDays       Int      @default(0)
+  bookingGap        Int      @default(0)
+
+  /// Age of the newest contributing source timestamp, in seconds.
+  freshnessSeconds Int     @default(0)
+  stale            Boolean @default(true)
+
+  /// Field-by-field provenance: which layer/source produced each value.
+  explanation Json
+
+  externalVersion Int      @default(0)
+  managedVersion  Int      @default(0)
+  version         Int      @default(1)
+  computedAt      DateTime @default(now())
+
+  @@unique([tenantId, propertyId, roomTypeId, ratePlanId, stayDate, occupancy])
+  @@index([propertyId, stayDate])
+  @@index([tenantId, stale])
+}
+
+// ─────────────────────────────────────────────────────────────
+// COMMERCIAL — contracts & promotions
+// ─────────────────────────────────────────────────────────────
+
+enum ContractStatus {
+  DRAFT
+  PENDING_APPROVAL
+  PUBLISHED
+  SUSPENDED
+  EXPIRED
+}
+
+enum PaymentModel {
+  NET
+  COMMISSION
+  PREPAID
+}
+
+model Contract {
+  id            String         @id @default(cuid())
+  tenantId      String
+  code          String
+  name          String
+  supplierOrgId String
+  buyerOrgId    String
+  status        ContractStatus @default(DRAFT)
+  version       Int            @default(1)
+
+  validFrom DateTime
+  validTo   DateTime
+
+  currency      String
+  paymentModel  PaymentModel @default(COMMISSION)
+  commissionPct Decimal      @default(0) @db.Decimal(6, 3)
+  markupPct     Decimal      @default(0) @db.Decimal(6, 3)
+  creditLimit   Decimal?     @db.Decimal(14, 2)
+
+  markets     String[]
+  channels    String[]
+  propertyIds String[]
+
+  cancellationPolicy      Json?
+  promotionPermissions    Json?
+  distributionPermissions Json?
+  /// Max resale depth. 2 by default: margin explosion and rate leakage
+  /// are the failure modes of unbounded chains.
+  maxResaleDepth          Int   @default(2)
+
+  publishedAt DateTime?
+  publishedBy String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  supplierOrg Organization      @relation("SupplierOrg", fields: [supplierOrgId], references: [id], onDelete: Cascade)
+  buyerOrg    Organization      @relation("BuyerOrg", fields: [buyerOrgId], references: [id], onDelete: Cascade)
+  versions    ContractVersion[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, status])
+  @@index([buyerOrgId, status])
+}
+
+model ContractVersion {
+  id         String   @id @default(cuid())
+  contractId String
+  version    Int
+  snapshot   Json
+  reason     String?
+  createdBy  String?
+  createdAt  DateTime @default(now())
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([contractId, version])
+}
+
+enum PromotionStatus {
+  DRAFT
+  PENDING_APPROVAL
+  ACTIVE
+  PAUSED
+  EXPIRED
+  CANCELLED
+}
+
+model Promotion {
+  id         String          @id @default(cuid())
+  tenantId   String
+  propertyId String
+  code       String
+  name       String
+  type       String
+  status     PromotionStatus @default(DRAFT)
+  version    Int             @default(1)
+
+  /// The rule DSL. Validated by Zod (PromotionDefinitionSchema) on every write.
+  definition Json
+
+  priority  Int      @default(100)
+  stackable Boolean  @default(false)
+  validFrom DateTime
+  validTo   DateTime
+
+  createdBy   String?
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  property Property           @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  versions PromotionVersion[]
+
+  // Deliberately NOT globally unique. A cancelled promotion keeps its row and
+  // its history, but frees its code: a hotel that cancels "EB30-SEP" because
+  // the terms were wrong must be able to recreate it corrected under the same
+  // name. Uniqueness among live promotions is enforced in CommercialService,
+  // and bookings reference promotion ids rather than codes, so reuse is safe.
+  @@index([tenantId, code])
+  @@index([propertyId, status])
+}
+
+model PromotionVersion {
+  id                String          @id @default(cuid())
+  promotionId       String
+  version           Int
+  definition        Json
+  status            PromotionStatus
+  reason            String?
+  supersedesVersion Int?
+  createdBy         String?
+  createdAt         DateTime        @default(now())
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+
+  @@unique([promotionId, version])
+}
+
+// ─────────────────────────────────────────────────────────────
+// SEARCH & OFFERS  (demand plane)
+// ─────────────────────────────────────────────────────────────
+
+model SearchRequest {
+  id            String   @id @default(cuid())
+  tenantId      String
+  buyerOrgId    String
+  destination   String?
+  propertyIds   String[]
+  checkIn       DateTime @db.Date
+  checkOut      DateTime @db.Date
+  rooms         Int      @default(1)
+  adults        Int      @default(2)
+  children      Int      @default(0)
+  market        String
+  currency      String
+  resultCount   Int      @default(0)
+  latencyMs     Int      @default(0)
+  correlationId String
+  createdAt     DateTime @default(now())
+
+  offers Offer[]
+
+  @@index([tenantId, createdAt])
+}
+
+model Offer {
+  id         String @id @default(cuid())
+  tenantId   String
+  searchId   String
+  buyerOrgId String
+  propertyId String
+  roomTypeId String
+  ratePlanId String
+
+  checkIn  DateTime @db.Date
+  checkOut DateTime @db.Date
+  nights   Int
+  adults   Int
+  children Int
+
+  // Currency provenance is preserved end to end. We never destroy the
+  // original supplier amount — reconciliation and disputes depend on it.
+  supplierCurrency   String
+  supplierAmount     Decimal  @db.Decimal(14, 4)
+  normalizedCurrency String
+  normalizedAmount   Decimal  @db.Decimal(14, 4)
+  fxRate             Decimal  @db.Decimal(18, 8)
+  fxSource           String
+  fxTimestamp        DateTime
+  buyerCurrency      String
+  buyerAmount        Decimal  @db.Decimal(14, 4)
+
+  netAmount        Decimal @db.Decimal(14, 4)
+  taxAmount        Decimal @db.Decimal(14, 4)
+  feeAmount        Decimal @db.Decimal(14, 4)
+  commissionAmount Decimal @db.Decimal(14, 4)
+  grossAmount      Decimal @db.Decimal(14, 4)
+
+  promotionIds String[]
+  contractId   String?
+  mealPlan     String   @default("RO")
+  cancellation Json?
+
+  provenance  Json
+  explanation Json
+
+  signature String
+  expiresAt DateTime
+  version   Int      @default(1)
+  createdAt DateTime @default(now())
+
+  search   SearchRequest @relation(fields: [searchId], references: [id], onDelete: Cascade)
+  bookings Booking[]
+
+  @@index([tenantId, expiresAt])
+  @@index([searchId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// BOOKING  (saga; UNKNOWN is a first-class state)
+// ─────────────────────────────────────────────────────────────
+
+enum BookingStatus {
+  DRAFT
+  PENDING
+  UNKNOWN
+  CONFIRMED
+  REJECTED
+  CANCEL_PENDING
+  CANCELLED
+  MANUAL_REVIEW
+}
+
+model Booking {
+  id         String        @id @default(cuid())
+  tenantId   String
+  reference  String        @unique
+  buyerOrgId String
+  propertyId String
+  offerId    String?
+  status     BookingStatus @default(DRAFT)
+
+  checkIn  DateTime @db.Date
+  checkOut DateTime @db.Date
+  nights   Int
+  adults   Int
+  children Int
+
+  guestName  String
+  guestEmail String?
+  guestPhone String?
+
+  amount       Decimal @db.Decimal(14, 4)
+  currencyCode String
+
+  supplierReference String?
+  idempotencyKey    String  @unique
+  correlationId     String
+
+  timeline  Json     @default("[]")
+  version   Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  offer    Offer?           @relation(fields: [offerId], references: [id])
+  attempts BookingAttempt[]
+
+  @@index([tenantId, status])
+  @@index([propertyId, checkIn])
+}
+
+model BookingAttempt {
+  id        String   @id @default(cuid())
+  bookingId String
+  attemptNo Int
+  operation String
+  request   Json
+  response  Json?
+  outcome   String
+  latencyMs Int      @default(0)
+  createdAt DateTime @default(now())
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@unique([bookingId, operation, attemptNo])
+}
+
+// ─────────────────────────────────────────────────────────────
+// AGENT CONTROL PLANE
+// ─────────────────────────────────────────────────────────────
+
+enum AgentChannel {
+  VOICE
+  CHAT
+  API
+}
+
+enum AgentActionStatus {
+  PROPOSED
+  AWAITING_CONFIRMATION
+  APPROVED
+  REJECTED
+  EXECUTING
+  EXECUTED
+  FAILED
+  ROLLED_BACK
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+model AgentSession {
+  id        String       @id @default(cuid())
+  tenantId  String
+  userId    String
+  channel   AgentChannel @default(CHAT)
+  /// First user message, trimmed. Used as the thread title in the console.
+  title     String?
+  context   Json?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @default(now()) @updatedAt
+
+  actions  AgentAction[]
+  messages AgentMessage[]
+
+  @@index([tenantId, userId, updatedAt])
+}
+
+/// A turn in a conversation. Assistant turns keep the tool steps they took, so
+/// the console can show HOW an answer was reached rather than asking the user
+/// to trust it.
+model AgentMessage {
+  id            String   @id @default(cuid())
+  sessionId     String
+  tenantId      String
+  userId        String
+  role          String
+  content       String
+  steps         Json     @default("[]")
+  /// AgentAction ids proposed during this turn.
+  proposalIds   String[]
+  modelId       String?
+  deterministic Boolean  @default(true)
+  correlationId String
+  createdAt     DateTime @default(now())
+
+  session AgentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@index([tenantId, createdAt])
+}
+
+model AgentAction {
+  id        String @id @default(cuid())
+  sessionId String
+  tenantId  String
+  userId    String
+
+  agent               String
+  modelId             String?
+  /// TRUE when intent came from the deterministic grammar (no LLM involved).
+  deterministicIntent Boolean @default(false)
+
+  utterance String
+  intent    String
+  /// Zod-validated StructuredCommand. This — not free text — is what the
+  /// execution runtime consumes.
+  command   Json
+
+  policyDecision Json?
+  simulation     Json?
+
+  status         AgentActionStatus @default(PROPOSED)
+  autonomyLevel  Int               @default(1)
+  riskLevel      RiskLevel         @default(LOW)
+  requiresStepUp Boolean           @default(false)
+
+  confirmedAt  DateTime?
+  confirmedBy  String?
+  rejectedAt   DateTime?
+  rejectReason String?
+  executedAt   DateTime?
+  result       Json?
+  error        String?
+
+  rollbackOfId   String?
+  rolledBackById String?
+
+  correlationId String
+  createdAt     DateTime @default(now())
+
+  session AgentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@index([tenantId, createdAt])
+  @@index([correlationId])
+}
+
+/// Phase-3 autonomy: a goal + hard constraints the Revenue Agent may
+/// operate inside without per-action confirmation.
+model AgentPolicy {
+  id             String   @id @default(cuid())
+  tenantId       String
+  organizationId String?
+  propertyId     String?
+  name           String
+  goal           Json
+  constraints    Json
+  autonomy       Int      @default(1)
+  active         Boolean  @default(true)
+  createdBy      String?
+  createdAt      DateTime @default(now())
+
+  @@index([tenantId, active])
+}
+
+// ─────────────────────────────────────────────────────────────
+// PLATFORM — audit, outbox, reconciliation
+// ─────────────────────────────────────────────────────────────
+
+/// Durable idempotency. The primary key IS the lock: the second caller for a
+/// key loses the insert and must not repeat the side effect.
+model IdempotencyRecord {
+  key       String   @id
+  scope     String
+  status    String
+  result    Json?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([expiresAt])
+  @@index([scope, status])
+}
+
+model AuditEvent {
+  id            BigInt   @id @default(autoincrement())
+  tenantId      String
+  actorType     String
+  actorId       String?
+  action        String
+  resourceType  String
+  resourceId    String?
+  before        Json?
+  after         Json?
+  reason        String?
+  correlationId String
+  ip            String?
+  createdAt     DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([resourceType, resourceId])
+  @@index([correlationId])
+}
+
+/// Transactional outbox. Domain changes and their events commit together.
+model OutboxEvent {
+  id            BigInt    @id @default(autoincrement())
+  tenantId      String
+  type          String
+  payload       Json
+  correlationId String
+  createdAt     DateTime  @default(now())
+  publishedAt   DateTime?
+  attempts      Int       @default(0)
+  lastError     String?
+
+  @@index([publishedAt])
+  @@index([tenantId, type])
+}
+
+enum ReconStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+model ReconciliationRun {
+  id           String      @id @default(cuid())
+  tenantId     String
+  connectionId String?
+  scope        Json
+  status       ReconStatus @default(RUNNING)
+  compared     Int         @default(0)
+  divergences  Int         @default(0)
+  report       Json?
+  startedAt    DateTime    @default(now())
+  finishedAt   DateTime?
+
+  items Divergence[]
+
+  @@index([tenantId, startedAt])
+}
+
+model Divergence {
+  id             String    @id @default(cuid())
+  runId          String
+  kind           String
+  key            Json
+  sourceValue    Json?
+  ledgerValue    Json?
+  effectiveValue Json?
+  status         String    @default("OPEN")
+  resolution     String?
+  resolvedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  run ReconciliationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, status])
+}
+
+// ═══════════════════════════════════════════════════════════
+// GROUPS
+//
+// Owned by services/groups. Block inventory is DECLARED by the hotel rather
+// than derived from ARI, because a group block is a commercial decision about
+// rooms held back, not an observation of what a channel manager published.
+// ═══════════════════════════════════════════════════════════
+
+enum Bedding {
+  SINGLE
+  TWIN
+  DOUBLE
+  TRIPLE
+  QUAD
+}
+
+enum GroupBlockStatus {
+  DRAFT
+  OPEN
+  CLOSED
+  EXPIRED
+}
+
+model GroupBlock {
+  id           String           @id @default(cuid())
+  tenantId     String
+  propertyId   String
+  code         String
+  name         String
+  fromDate     String
+  toDate       String
+  currency     String
+  /// The physical cap. Lines may sum above it — the same rooms convert.
+  roomsCeiling Int
+  releaseDays  Int              @default(30)
+  minRooms     Int              @default(1)
+  status       GroupBlockStatus @default(DRAFT)
+  notes        String?
+  createdBy    String
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  lines    GroupBlockLine[]
+  requests GroupRequest[]
+
+  @@unique([tenantId, propertyId, code])
+  @@index([tenantId, propertyId, status])
+  @@index([tenantId, fromDate, toDate])
+}
+
+model GroupBlockLine {
+  id           String   @id @default(cuid())
+  blockId      String
+  roomTypeId   String
+  bedding      Bedding
+  roomsTotal   Int
+  ratePerNight Decimal? @db.Decimal(14, 2)
+
+  block GroupBlock @relation(fields: [blockId], references: [id], onDelete: Cascade)
+
+  @@unique([blockId, roomTypeId, bedding])
+}
+
+/// One per property. Benefits and the floor rate live here so the same numbers
+/// serve the quote, the negotiation and the contract.
+model GroupPolicy {
+  id                    String   @id @default(cuid())
+  tenantId              String
+  propertyId            String   @unique
+  minRoomsForGroup      Int      @default(10)
+  floorRatePerNight     Decimal? @db.Decimal(14, 2)
+  floorCurrency         String?
+  autoDeclineBelowFloor Boolean  @default(false)
+  responseWindowHours   Int      @default(24)
+  depositPct            Decimal  @default(30) @db.Decimal(5, 2)
+  cancellationPolicy    String?
+  /// GroupBenefit[] — validated by SetGroupPolicySchema before it lands here.
+  benefits              Json     @default("[]")
+  notifyEmails          String[]
+  notifyWhatsapp        String[]
+  updatedBy             String
+  updatedAt             DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+enum GroupRequestStatus {
+  OPEN
+  COUNTERED
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  WITHDRAWN
+}
+
+enum BidActor {
+  AGENCY
+  HOTEL
+}
+
+/// Whether the rooms an accepted group committed have actually come out of
+/// sale. FAILED is the state that must never sit quietly: the hotel believes
+/// the rooms are gone and the channel manager is still selling them.
+enum InventoryReleaseStatus {
+  NOT_REQUIRED
+  PENDING
+  APPLIED
+  FAILED
+}
+
+model GroupRequest {
+  id                 String                 @id @default(cuid())
+  tenantId           String
+  propertyId         String
+  blockId            String?
+  /// The buying agency. Named on every notification because a hotel decides
+  /// differently depending on who is asking.
+  organizationId     String
+  requestedBy        String
+  groupName          String
+  checkIn            String
+  checkOut           String
+  pax                Int
+  /// GroupRoomRequest[]
+  rooms              Json
+  budgetTotal        Decimal                @db.Decimal(14, 2)
+  currency           String
+  inclusions         String[]
+  notes              String?
+  status             GroupRequestStatus     @default(OPEN)
+  /// Mirrors the newest live bid so the list view needs no join.
+  currentTotal       Decimal                @db.Decimal(14, 2)
+  currentActor       BidActor               @default(AGENCY)
+  expiresAt          DateTime
+  settledAt          DateTime?
+  settledBy          String?
+  /// Snapshot of the evaluation at settlement — the floor can move afterwards
+  /// and the decision must still be explainable with the numbers it was made on.
+  settlement         Json?
+  /// Set when the group is accepted and the ARI decrement is attempted.
+  inventoryStatus    InventoryReleaseStatus @default(NOT_REQUIRED)
+  inventoryDetail    Json?
+  inventoryAppliedAt DateTime?
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+
+  block         GroupBlock?    @relation(fields: [blockId], references: [id])
+  bids          GroupBid[]
+  notifications Notification[]
+
+  @@index([tenantId, propertyId, status])
+  @@index([tenantId, organizationId, status])
+  @@index([status, expiresAt])
+  @@index([status, inventoryStatus])
+}
+
+/// Append-only. A negotiation that can be edited is a negotiation neither side
+/// can rely on.
+model GroupBid {
+  id          String   @id @default(cuid())
+  requestId   String
+  round       Int
+  actor       BidActor
+  actorUserId String
+  total       Decimal  @db.Decimal(14, 2)
+  currency    String
+  /// GroupBenefit[] offered alongside this amount.
+  benefits    Json     @default("[]")
+  message     String?
+  /// BidEvaluation as computed when the bid was placed.
+  evaluation  Json?
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  request GroupRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, round])
+  @@index([requestId])
+}
+
+enum NotificationChannel {
+  EMAIL
+  WHATSAPP
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  NOT_CONFIGURED
+}
+
+/// Delivery is recorded, never assumed. A row that says SENT means a provider
+/// accepted it; NOT_CONFIGURED means nobody was ever going to receive it and
+/// says so instead of looking like success.
+model Notification {
+  id            String              @id @default(cuid())
+  tenantId      String
+  channel       NotificationChannel
+  template      String
+  recipient     String
+  subject       String?
+  body          String
+  payload       Json
+  status        NotificationStatus  @default(PENDING)
+  provider      String?
+  providerRef   String?
+  failureReason String?
+  requirement   String?
+  attempts      Int                 @default(0)
+  requestId     String?
+  correlationId String
+  createdAt     DateTime            @default(now())
+  sentAt        DateTime?
+
+  request GroupRequest? @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@index([requestId])
+}
+
+// ═══════════════════════════════════════════════════════════
+// EVENT SPACE
+// ═══════════════════════════════════════════════════════════
+
+model EventSpace {
+  id             String   @id @default(cuid())
+  tenantId       String
+  propertyId     String
+  code           String
+  name           String
+  currency       String
+  areaM2         Decimal? @db.Decimal(10, 2)
+  ceilingHeightM Decimal? @db.Decimal(5, 2)
+  naturalLight   Boolean  @default(false)
+  divisible      Boolean  @default(false)
+  floor          String?
+  halfDayHours   Int      @default(4)
+  fullDayHours   Int      @default(8)
+  /// LayoutCapacity[] — capacity depends on how the chairs are arranged, so it
+  /// cannot be a single number on the space.
+  layouts        Json     @default("[]")
+  /// EventSpaceRate[]
+  rates          Json     @default("[]")
+  /// EventSpaceAddonDef[]
+  addons         Json     @default("[]")
+  active         Boolean  @default(true)
+  notes          String?
+  updatedBy      String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([tenantId, propertyId, code])
+  @@index([tenantId, propertyId, active])
+}

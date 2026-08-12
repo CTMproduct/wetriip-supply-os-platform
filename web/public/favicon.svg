@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!--
+    Wetriip isotype. The round caps at the three upper vertices are the dots of
+    the two fallen i's — never redraw them as separate circles, and never let
+    the stroke width drift away from them.
+    White left, magenta right: origin and destination.
+  -->
+  <rect width="512" height="512" rx="62" ry="62" fill="#0F1729"/>
+  <g fill="none" stroke-width="46" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M288 212 L358 432 L482 138" stroke="#EC4899"/>
+    <path d="M96 138 L220 432 L288 212" stroke="#FFFFFF"/>
+  </g>
+</svg>

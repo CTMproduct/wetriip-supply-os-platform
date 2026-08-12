@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "declaration": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "sourceMap": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "strictNullChecks": true,
+    "noImplicitAny": false,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": false,
+    "baseUrl": ".",
+    "paths": {
+      "@wetriip/contracts": ["packages/contracts/src/index.ts"],
+      "@wetriip/domain": ["packages/domain/src/index.ts"],
+      "@wetriip/persistence": ["packages/persistence/src/index.ts"],
+      "@wetriip/bus": ["packages/bus/src/index.ts"],
+      "@wetriip/connectivity-sdk": ["packages/connectivity-sdk/src/index.ts"],
+      "@wetriip/observability": ["packages/observability/src/index.ts"]
+    }
+  },
+  "exclude": ["node_modules", "**/dist", "web"]
+}
