@@ -7,6 +7,9 @@
  * to each other.
  */
 export * from './context';
+export * from './internal-identity';
+export * from './posture';
+export * from './scope';
 export * from './errors';
 export * from './health.controller';
 export * from './bootstrap';

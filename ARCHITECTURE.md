@@ -9,7 +9,7 @@ propuesta. Donde algo está deliberadamente sin construir, se marca
 - 7 paquetes compartidos
 - 45 modelos de datos, 37 enums
 - 69 rutas públicas, 103 rutas internas
-- 175 pruebas unitarias (12 suites), 102 verificaciones end-to-end
+- 215 pruebas unitarias (14 suites), 113 verificaciones end-to-end
 
 ---
 
@@ -68,7 +68,7 @@ calculado el diff. Un motor de política que corre primero solo puede revisar lo
 que el usuario escribió — justamente el conjunto de cosas que un comando
 equivocado acierta.
 
-### Las 16 reglas no negociables
+### Las 24 reglas no negociables
 
 Viven en `CLAUDE.md` y se revisan en cada cambio:
 
@@ -90,6 +90,15 @@ Viven en `CLAUDE.md` y se revisan en cada cambio:
 11. Los estados vacíos declaran su causa. Nunca un arreglo vacío donde un error
     tipado con dueño y remediación le diría al operador qué hacer.
 12. El permiso es la unidad de autoridad; el rol es un paquete.
+12b. **La identidad se firma, no se afirma.** Los servicios internos rechazan
+    contexto que no puedan verificar. La posición de red no es autenticación.
+12c. **El step-up es una prueba ligada a UNA acción**, nunca un booleano.
+12d. **Una propuesta carga un binding** y la confirmación revalida autoridad,
+    política y el estado del que salieron los números.
+12e. **Las transiciones de estado son updates condicionales**, no read-then-write.
+12f. **Cuando la incertidumbre toca dinero, se falla cerrado.**
+12g. **Cada herramienta del asistente declara su permiso.** El prompt no es una
+    frontera de seguridad.
 13. Nadie reparte autoridad que no tiene, y ningún permiso que deje a un tenant
     ver a otro puede otorgarse desde dentro de un tenant.
 14. El inventario de grupos es **declarado**, no observado, y nunca entra al
@@ -947,7 +956,11 @@ Abrir <http://localhost:3100>. La consola cambia de forma según quién entra:
 | `gerencia@caribehotels.co` | Gerente general — lo anterior más **Equipo** |
 | `ecommerce@caribehotels.co` | E-commerce — lee y propone, no escribe |
 | `gerencia@ctmenlinea.com.co` | Agencia — el lado comprador |
-| `ops@wetriip.ai` | Personal Wetriip — agrega **Plataforma** |
+| `pipe@wetriip.ai` | Personal Wetriip — agrega **Plataforma** |
+
+> El acceso por correo es un atajo de desarrollo: **no autentica a nadie.** En
+> producción el proceso se niega a arrancar sin `OIDC_ISSUER` configurado
+> (`assertProductionPosture`). Ver [ADR-010](docs/adr/ADR-010-control-plane-hardening.md).
 
 ### Verificar
 

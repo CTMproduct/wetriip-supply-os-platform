@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import Anthropic from '@anthropic-ai/sdk';
-import { StructuredCommandSchema, toStayDate } from '@wetriip/contracts';
+import { StructuredCommandSchema, renderCommandCatalog, toStayDate } from '@wetriip/contracts';
 import { IntentContext, IntentParseResult, parseIntent } from '@wetriip/domain';
 import { Logger, M, metrics } from '@wetriip/observability';
 import { LOGGER, RequestContext } from '@wetriip/service-kit';
@@ -154,21 +154,9 @@ Reply with exactly one JSON object:
 or
 {"understood": false, "reason": "<what specifically is missing, in the user's language>"}
 
-Permitted command kinds and their shapes:
+Permitted command kinds and their shapes (generated from the platform schema — this list is exhaustive):
 
-READ (no confirmation needed)
-- explain_no_sales: {kind, propertyId, from?, to?, market?}
-- get_availability: {kind, propertyId, from, to, roomTypeCodes?}
-- get_ari_health: {kind, propertyId, from?, to?}
-- get_connectivity_health: {kind, propertyId?}
-- list_promotions: {kind, propertyId}
-
-WRITE (simulated and confirmed by a human before anything happens)
-- create_promotion: {kind, code, name, validFrom, validTo, definition:{type, scope:{propertyId, roomTypeCodes?, ratePlanCodes?}, audience:{markets?, organizationIds?, channels?, promoCode?}, bookingWindow:{minAdvanceDays?, maxAdvanceDays?, from?, to?}, stayWindow:{from, to, daysOfWeek?}, los:{min?, max?}, occupancy:{}, discount:{type:"PERCENTAGE"|"FIXED"|"FREE_NIGHTS", value, currency?, stayNights?, payNights?}, stacking:{allowed, priority}}}
-- update_rates: {kind, target:{propertyId, roomTypeCodes?, ratePlanCodes?, from, to, daysOfWeek?, occupancy?}, changeType:"PERCENTAGE"|"ABSOLUTE"|"SET", value, currency?, reason?}
-- update_availability: {kind, target:{...}, changeType:"SET"|"DELTA", value, reason?}
-- update_restriction: {kind, target:{...}, restriction:{open?, closedToArrival?, closedToDeparture?, minLos?, maxLos?, releaseDays?}, reason?}
-- rollback_action: {kind, actionId, reason?}
+${renderCommandCatalog()}
 
 Rules you must not break:
 - All dates are ISO yyyy-mm-dd. Resolve relative dates against the supplied "today".

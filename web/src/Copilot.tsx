@@ -69,10 +69,12 @@ export function Copilot({
     }
   }
 
-  async function confirm(actionId: string) {
+  /** `requiresStepUp` decides whether we fetch a proof first. The proof is
+   *  bound to this action id and discarded immediately after use. */
+  async function confirm(actionId: string, requiresStepUp = false) {
     setBusy(true);
     try {
-      const res = await api.confirm(actionId);
+      const res = await api.confirm(actionId, requiresStepUp);
       setTurns((t) => [...t, { role: 'agent', text: res.speech, action: res.action }]);
       onChanged?.();
     } catch (err) {
@@ -179,7 +181,7 @@ function ActionDetail({
   busy,
 }: {
   action: any;
-  onConfirm: (id: string) => void;
+  onConfirm: (id: string, requiresStepUp: boolean) => void;
   onReject: (id: string) => void;
   busy: boolean;
 }) {
@@ -254,7 +256,7 @@ function ActionDetail({
 
       {awaiting && (
         <div className="row" style={{ marginTop: 9 }}>
-          <button className="btn-primary btn-sm" onClick={() => onConfirm(action.id)} disabled={busy}>
+          <button className="btn-primary btn-sm" onClick={() => onConfirm(action.id, Boolean(action.requiresStepUp))} disabled={busy}>
             Confirm
           </button>
           <button className="btn-sm" onClick={() => onReject(action.id)} disabled={busy}>

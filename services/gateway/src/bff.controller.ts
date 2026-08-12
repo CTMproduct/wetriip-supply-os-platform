@@ -47,10 +47,13 @@ export class BffController {
         remediation: 'Sign in first.',
       });
     }
+    // `stepUp` is no longer a boolean the browser can assert. It is an opaque
+    // proof, forwarded untouched, that the owning service verifies against the
+    // one action it was issued for.
     return this.auth.toContext(this.auth.verify(token), {
       correlationId: newCorrelationId(),
       ip,
-      stepUp: String(stepUp ?? '').toLowerCase() === 'true',
+      stepUpProof: stepUp,
     });
   }
 
@@ -88,6 +91,22 @@ export class BffController {
   @Post('auth/login')
   login(@Body() body: { email: string }) {
     return this.auth.login(body?.email ?? '');
+  }
+
+  /**
+   * Obtain a step-up proof for ONE action.
+   *
+   * The proof names the user, the tenant, the action and an expiry five minutes
+   * out. It cannot be replayed against a different change, which is the entire
+   * difference between this and the boolean header it replaces.
+   */
+  @Post('auth/step-up')
+  stepUp(
+    @Body() body: { actionId: string },
+    @Headers('authorization') authorization?: string,
+  ) {
+    const claims = this.auth.verify((authorization ?? '').replace(/^Bearer\s+/i, ''));
+    return this.auth.stepUp(claims, body?.actionId ?? '');
   }
 
   @Get('me')
@@ -231,6 +250,12 @@ export class BffController {
     // The catalog IS the page — without it there is no property to render, so
     // that one failure is still fatal and says so with its real cause.
     if (!catalog.ok) {
+      // Propagate the ORIGINAL error. A property that does not exist, or is
+      // outside the caller's scope, is a 404 — dressing it as
+      // DEPENDENCY_UNAVAILABLE tells the operator the platform is broken when
+      // in fact the answer is "no". Only a genuine transport failure degrades
+      // to a dependency error.
+      if (catalog.error instanceof DomainError) throw catalog.error;
       throw new DomainError({
         code: 'DEPENDENCY_UNAVAILABLE',
         message: 'The property catalog is unavailable, so this workspace cannot be built.',
@@ -1044,12 +1069,20 @@ export class BffController {
 async function settle<T>(
   section: string,
   run: () => Promise<T>,
-): Promise<{ section: string; ok: boolean; data: T | null; reason: string | null }> {
+): Promise<{
+  section: string;
+  ok: boolean;
+  data: T | null;
+  reason: string | null;
+  error: unknown;
+}> {
   try {
-    return { section, ok: true, data: await run(), reason: null };
+    return { section, ok: true, data: await run(), reason: null, error: null };
   } catch (err) {
     const reason =
       err instanceof DomainError ? err.message : `${section} is not responding right now.`;
-    return { section, ok: false, data: null, reason };
+    // The original error is kept so a caller that must fail can fail with the
+    // real cause rather than a generic one.
+    return { section, ok: false, data: null, reason, error: err };
   }
 }

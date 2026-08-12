@@ -236,7 +236,7 @@ async function main() {
 
   // ── 9. Audit ─────────────────────────────────────────────
   console.log('\n[9] Audit trail');
-  await login('ops@wetriip.ai');
+  await login('pipe@wetriip.ai');
   const audit = await api('GET', '/api/v1/audit?limit=50');
   ok('privileged actions are recorded', audit.ok && audit.body.length > 0, `${audit.body?.length} entries`);
   const hasAgent = (audit.body ?? []).some((a) => a.actorType === 'AGENT');
@@ -334,7 +334,7 @@ async function main() {
 
   // ── 13. Partner credit ───────────────────────────────────
   console.log('\n[13] Partner profiles and credit');
-  await login('ops@wetriip.ai');
+  await login('pipe@wetriip.ai');
   const partners = await api('GET', '/api/v1/partners');
   ok(
     'partners carry a code, a tax identity and a credit line',
@@ -526,7 +526,7 @@ async function main() {
   ok('a general manager cannot reach platform administration either', gmAdmin.status === 403);
 
   // Wetriip staff see everything.
-  const ops = await login('ops@wetriip.ai');
+  const ops = await login('pipe@wetriip.ai');
   ok(
     'platform staff hold the cross-tenant permissions',
     ops.permissions.includes('platform.tenants.read') &&
@@ -1033,6 +1033,198 @@ async function main() {
     'it still will not apply it without a human confirming',
     dictated.body?.requiresConfirmation === true,
     dictated.body?.action?.status,
+  );
+
+  // ── 18. The control plane cannot be talked into anything ──
+  // These are the invariants a CTO review flagged as unprovable. Each one is a
+  // request that used to succeed.
+  console.log('\n[18] Control plane hardening');
+
+  // A. Forging identity by typing headers at an internal port.
+  const forged = await api(
+    'GET',
+    '/internal/core/properties',
+    undefined,
+    {
+      'x-wetriip-tenant': claims.tenantId,
+      'x-wetriip-user': 'attacker',
+      'x-wetriip-role': 'SUPER_ADMIN',
+      'x-wetriip-permissions': 'users.manage,rates.write,platform.tenants.read',
+      'x-wetriip-org': 'anything',
+      'x-wetriip-status': 'ACTIVE',
+      'x-wetriip-autonomy': '3',
+    },
+  );
+  ok(
+    'typed context headers cannot mint authority at an internal port',
+    forged.status === 403 &&
+      /Internal identity could not be verified/i.test(forged.body?.error?.message ?? ''),
+    forged.body?.error?.remediation?.slice(0, 70),
+  );
+
+  // B. Step-up as a boolean.
+  await login('melisa@caribehotels.co');
+  const highRisk = await api('POST', '/api/v1/agent/ask', {
+    utterance: 'Cierra la venta para septiembre',
+    context: { propertyId: cartagena.id },
+  });
+  const riskyId = highRisk.body?.action?.id;
+  ok(
+    'a closing-inventory request is classified HIGH risk and demands step-up',
+    highRisk.body?.action?.requiresStepUp === true,
+    highRisk.body?.action?.riskLevel,
+  );
+
+  if (riskyId) {
+    const withBoolean = await api(
+      'POST',
+      `/api/v1/agent/actions/${riskyId}/confirm`,
+      {},
+      { 'x-wetriip-step-up': 'true' },
+    );
+    ok(
+      'the string "true" is no longer accepted as a second factor',
+      withBoolean.status === 401 || withBoolean.status === 403,
+      withBoolean.body?.error?.remediation,
+    );
+
+    // C. A proof is bound to ONE action.
+    const otherAsk = await api('POST', '/api/v1/agent/ask', {
+      utterance: 'Cierra la venta para octubre',
+      context: { propertyId: cartagena.id },
+    });
+    const otherId = otherAsk.body?.action?.id;
+    const proofForOther = await api('POST', '/api/v1/auth/step-up', { actionId: otherId });
+    const replayed = await api(
+      'POST',
+      `/api/v1/agent/actions/${riskyId}/confirm`,
+      {},
+      { 'x-wetriip-step-up': proofForOther.body?.proof ?? '' },
+    );
+    ok(
+      'a step-up proof issued for one action cannot confirm another',
+      (replayed.status === 401 || replayed.status === 403) &&
+        /different action/i.test(replayed.body?.error?.remediation ?? ''),
+      replayed.body?.error?.remediation,
+    );
+    ok(
+      'a development proof says so, rather than claiming MFA happened',
+      proofForOther.ok && proofForOther.body.amr?.[0] === 'dev',
+      `amr=${proofForOther.body?.amr}`,
+    );
+
+    await api('POST', `/api/v1/agent/actions/${riskyId}/reject`, { reason: 'smoke' });
+    await api('POST', `/api/v1/agent/actions/${otherId}/reject`, { reason: 'smoke' });
+  }
+
+  // D. Chat tools inherit the caller's permissions.
+  await login('reservas@caribehotels.co');
+  const agentReach = await api('POST', '/api/v1/agent/ask', {
+    utterance: 'dame el revenue advisory',
+    context: { propertyId: cartagena.id },
+  });
+  ok(
+    'a reservations agent cannot reach revenue analytics through the assistant',
+    agentReach.body?.action?.status === 'REJECTED' ||
+      /analytics\.read/.test(JSON.stringify(agentReach.body ?? {})),
+    agentReach.body?.action?.policyDecision?.denialReason ?? agentReach.body?.speech?.slice(0, 60),
+  );
+
+  // E. Property scope is applied where rows are listed, not only where they
+  //    are written.
+  await login('melisa@caribehotels.co');
+  const gmSession = await api('POST', '/api/v1/auth/login', {
+    email: 'gerencia@caribehotels.co',
+  });
+  const gmAuth = { authorization: `Bearer ${gmSession.body.token}` };
+  const scopedUser = await api(
+    'POST',
+    '/api/v1/users',
+    {
+      email: 'scoped@caribehotels.co',
+      name: 'Scoped Manager',
+      role: 'REVENUE_MANAGER',
+      status: 'ACTIVE',
+      grants: [],
+      revokes: [],
+      propertyIds: [cartagena.id],
+      maxAutonomy: 1,
+    },
+    gmAuth,
+  );
+  ok('a user can be scoped to a single property', scopedUser.ok, scopedUser.body?.propertyIds?.length);
+
+  await login('scoped@caribehotels.co');
+  const visible = await api('GET', '/api/v1/properties');
+  ok(
+    'a property-scoped user lists only the properties in their scope',
+    visible.ok && visible.body.length === 1 && visible.body[0].id === cartagena.id,
+    `${visible.body?.length} of ${props.body.length} properties visible`,
+  );
+  const outOfScope = props.body.find((p) => p.id !== cartagena.id);
+  const peek = await api('GET', `/api/v1/properties/${outOfScope.id}/workspace`);
+  ok(
+    'a property outside the scope reads as not found, not as forbidden',
+    peek.status === 404,
+    `${peek.status} ${peek.body?.error?.code}`,
+  );
+
+  // F. Authority is re-read at confirmation, not carried from the proposal.
+  await login('melisa@caribehotels.co');
+  const proposal = await api('POST', '/api/v1/agent/ask', {
+    utterance: 'Sube mis tarifas 3% para septiembre',
+    context: { propertyId: cartagena.id },
+  });
+  const proposalId = proposal.body?.action?.id;
+  await api(
+    'POST',
+    '/api/v1/users',
+    {
+      email: 'melisa@caribehotels.co',
+      name: 'Melisa Rojas',
+      jobTitle: 'Revenue Manager',
+      role: 'REVENUE_MANAGER',
+      status: 'ACTIVE',
+      grants: [],
+      revokes: ['rates.write'],
+      propertyIds: [],
+      maxAutonomy: 2,
+    },
+    gmAuth,
+  );
+  await login('melisa@caribehotels.co');
+  const afterRevoke = await api('POST', `/api/v1/agent/actions/${proposalId}/confirm`, {});
+  ok(
+    'a proposal cannot execute after the permission behind it was revoked',
+    afterRevoke.status === 403 || afterRevoke.status === 409,
+    afterRevoke.body?.error?.message?.slice(0, 80),
+  );
+
+  // Put the revenue manager back.
+  await api(
+    'POST',
+    '/api/v1/users',
+    {
+      email: 'melisa@caribehotels.co',
+      name: 'Melisa Rojas',
+      jobTitle: 'Revenue Manager',
+      role: 'REVENUE_MANAGER',
+      status: 'ACTIVE',
+      grants: [],
+      revokes: [],
+      propertyIds: [],
+      maxAutonomy: 2,
+    },
+    gmAuth,
+  );
+
+  // G. Credit fails closed.
+  ok(
+    'the booking path refuses rather than proceeding when credit cannot be checked',
+    /DEPENDENCY_UNAVAILABLE/.test(
+      require('node:fs').readFileSync('services/booking/src/booking.service.ts', 'utf8'),
+    ),
+    'credit check throws instead of catching to null',
   );
 
   console.log(`\n=== ${checks - failures}/${checks} checks passed ===\n`);

@@ -530,3 +530,55 @@ export type ChatStreamEvent =
   | { type: 'proposal'; action: AgentActionView }
   | { type: 'done'; message: ConversationMessage }
   | { type: 'error'; code: string; message: string; remediation?: string };
+
+/**
+ * The command language, derived from the schema instead of retyped.
+ *
+ * The system prompt used to list ten command kinds while the union had
+ * nineteen. Nobody noticed, because nothing compared them — so the model was
+ * told half the platform did not exist, and the half it was not told about
+ * could only ever be reached by the deterministic grammar.
+ *
+ * The definition now lives in exactly one place. A new command kind appears in
+ * the prompt the moment it is added to the union, and a test asserts it.
+ */
+export interface CommandShape {
+  kind: CommandKind;
+  read: boolean;
+  /** Top-level keys, with `?` on the optional ones. */
+  fields: string[];
+}
+
+export function commandCatalog(): CommandShape[] {
+  return StructuredCommandSchema.options.map((option: any) => {
+    const shape = option.shape as Record<string, any>;
+    const kind = shape.kind.value as CommandKind;
+    const fields = Object.keys(shape)
+      .filter((k) => k !== 'kind')
+      .map((k) => {
+        const def = shape[k];
+        const optional =
+          typeof def?.isOptional === 'function' ? def.isOptional() : Boolean(def?._def?.defaultValue);
+        return optional ? `${k}?` : k;
+      });
+    return { kind, read: READ_COMMANDS.includes(kind), fields };
+  });
+}
+
+/** The block the model is shown. Generated, never hand-maintained. */
+export function renderCommandCatalog(): string {
+  const catalog = commandCatalog();
+  const section = (title: string, rows: CommandShape[]) =>
+    `${title}\n${rows.map((r) => `- ${r.kind}: {kind, ${r.fields.join(', ')}}`).join('\n')}`;
+  return [
+    section(
+      'READ (answered immediately; nothing changes)',
+      catalog.filter((c) => c.read),
+    ),
+    '',
+    section(
+      'WRITE (simulated, policy-checked and confirmed by a human before anything happens)',
+      catalog.filter((c) => !c.read),
+    ),
+  ].join('\n');
+}

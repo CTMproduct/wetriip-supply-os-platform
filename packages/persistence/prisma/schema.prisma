@@ -1126,8 +1126,14 @@ model Booking {
   currencyCode String
 
   supplierReference String?
-  idempotencyKey    String  @unique
+  idempotencyKey    String
   correlationId     String
+
+  /// Whether the credit hold actually landed after the supplier confirmed.
+  /// HOLD_FAILED is real exposure the ledger does not yet know about, and
+  /// reconciliation looks for it.
+  creditStatus        String?
+  creditFailureReason String?
 
   timeline  Json     @default("[]")
   version   Int      @default(1)
@@ -1139,6 +1145,8 @@ model Booking {
 
   @@index([tenantId, status])
   @@index([propertyId, checkIn])
+
+  @@unique([tenantId, idempotencyKey])
 }
 
 model BookingAttempt {
@@ -1243,6 +1251,11 @@ model AgentAction {
   command   Json
 
   policyDecision Json?
+  /// Fingerprint of the command, the ARI state, the projected numbers and the
+  /// caller's authority AT THE MOMENT THE HUMAN WAS SHOWN THE PROPOSAL.
+  /// Re-taken at confirmation; a mismatch refuses rather than executing
+  /// something nobody approved.
+  binding       Json?
   simulation     Json?
 
   status         AgentActionStatus @default(PROPOSED)

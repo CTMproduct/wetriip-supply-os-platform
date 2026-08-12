@@ -4,7 +4,10 @@ import {
   Permission,
   ROLE_PERMISSIONS,
   Role,
+  READ_COMMANDS,
   StructuredCommandSchema,
+  commandCatalog,
+  renderCommandCatalog,
 } from '@wetriip/contracts';
 import {
   COMMAND_PERMISSIONS,
@@ -212,5 +215,24 @@ describe('the agent inherits authority and never grants it', () => {
     expect(can(ec, COMMAND_PERMISSIONS.get_revenue_advisory)).toBe(true);
     expect(can(ec, COMMAND_PERMISSIONS.update_rates)).toBe(false);
     expect(can(ec, COMMAND_PERMISSIONS.create_promotion)).toBe(false);
+  });
+});
+
+describe('the command catalog cannot drift from the schema', () => {
+  it('renders every kind the union declares', () => {
+    const kinds = StructuredCommandSchema.options.map((o: any) => o.shape.kind.value as string);
+    const rendered = renderCommandCatalog();
+    for (const kind of kinds) {
+      expect(rendered).toContain(kind);
+    }
+  });
+
+  it('splits read from write the same way the platform does', () => {
+    const catalog = commandCatalog();
+    expect(catalog.filter((c) => c.read).map((c) => c.kind).sort()).toEqual([...READ_COMMANDS].sort());
+  });
+
+  it('covers every kind, so a new command reaches the model automatically', () => {
+    expect(commandCatalog()).toHaveLength(StructuredCommandSchema.options.length);
   });
 });

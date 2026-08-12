@@ -112,7 +112,10 @@ export class ConversationService {
       req.message,
     );
 
-    await this.prisma.agentMessage.create({
+    // Persisted first so a crash mid-turn does not lose what the user said.
+    // Its id is then excluded from the history read, because the turn appends
+    // the same message again with the screen context attached.
+    const userMessage = await this.prisma.agentMessage.create({
       data: {
         sessionId: session.id,
         tenantId: ctx.tenantId,
@@ -138,7 +141,7 @@ export class ConversationService {
 
     try {
       if (this.anthropic) {
-        text = await this.runModelTurn(ctx, session.id, req, emit, steps, proposals);
+        text = await this.runModelTurn(ctx, session.id, req, emit, steps, proposals, userMessage.id);
       } else {
         text = await this.runDeterministicTurn(ctx, session.id, req, emit, steps, proposals);
       }
@@ -199,9 +202,10 @@ export class ConversationService {
     emit: (e: ChatStreamEvent) => void,
     steps: ToolStep[],
     proposals: AgentActionView[],
+    currentMessageId: string,
   ): Promise<string> {
     const modelId = process.env.AGENT_MODEL ?? 'claude-sonnet-5';
-    const history = await this.recentHistory(ctx, sessionId);
+    const history = await this.recentHistory(ctx, sessionId, currentMessageId);
 
     const messages: Anthropic.MessageParam[] = [
       ...history,
@@ -410,9 +414,18 @@ export class ConversationService {
   private async recentHistory(
     ctx: RequestContext,
     sessionId: string,
+    excludeMessageId?: string,
   ): Promise<Anthropic.MessageParam[]> {
     const rows = await this.prisma.agentMessage.findMany({
-      where: { sessionId, tenantId: ctx.tenantId },
+      // Scoped by user as well as tenant. Within one tenant, knowing another
+      // person's session id was enough to read their conversation — and those
+      // conversations contain rates, contracts and partner credit.
+      where: {
+        sessionId,
+        tenantId: ctx.tenantId,
+        userId: ctx.userId,
+        ...(excludeMessageId ? { NOT: { id: excludeMessageId } } : {}),
+      },
       orderBy: { createdAt: 'desc' },
       take: 12,
     });

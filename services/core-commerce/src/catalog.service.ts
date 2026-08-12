@@ -3,7 +3,7 @@ import type { PrismaClient } from '@prisma/client';
 import { DomainError, PropertyRef, RatePlanRef, RoomTypeRef, TaxRuleRef } from '@wetriip/contracts';
 import { AuditLog, toNumber } from '@wetriip/persistence';
 import type { EventBus } from '@wetriip/bus';
-import { AUDIT_LOG, EVENT_BUS, PRISMA, RequestContext } from '@wetriip/service-kit';
+import { AUDIT_LOG, EVENT_BUS, PRISMA, RequestContext, propertyScope, scopedPropertyWhere } from '@wetriip/service-kit';
 
 /**
  * Catalog.
@@ -26,15 +26,20 @@ export class CatalogService {
   ) {}
 
   async listProperties(ctx: RequestContext): Promise<PropertyRef[]> {
+    // `tenantId` alone was not enough. A revenue manager restricted to two
+    // hotels was listed every property in the tenant, because organization and
+    // property scope were checked elsewhere and not here.
     const rows = await this.prisma.property.findMany({
-      where: { tenantId: ctx.tenantId },
+      where: propertyScope(ctx),
       orderBy: { name: 'asc' },
     });
     return rows.map(toPropertyRef);
   }
 
   async getProperty(ctx: RequestContext, id: string): Promise<PropertyRef> {
-    const row = await this.prisma.property.findFirst({ where: { id, tenantId: ctx.tenantId } });
+    const row = await this.prisma.property.findFirst({ where: scopedPropertyWhere(ctx, id) });
+    // Out of scope reads as "not found" on purpose. Telling a caller that a
+    // property exists but is none of their business is itself a disclosure.
     if (!row) throw notFound('Property', id);
     return toPropertyRef(row);
   }
@@ -50,8 +55,12 @@ export class CatalogService {
     ratePlans: RatePlanRef[];
     taxes: TaxRuleRef[];
   }> {
+    // `tenantId` alone let a property-scoped user open the workspace of a
+    // sibling hotel by id. Scope is spread from the same primitive the list
+    // uses, so the two cannot disagree — which is the whole reason it is a
+    // primitive rather than a rule to remember.
     const property = await this.prisma.property.findFirst({
-      where: { id: propertyId, tenantId: ctx.tenantId },
+      where: scopedPropertyWhere(ctx, propertyId),
       include: { roomTypes: true, ratePlans: true, taxes: true },
     });
     if (!property) throw notFound('Property', propertyId);

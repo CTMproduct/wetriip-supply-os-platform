@@ -13,10 +13,28 @@ import {
   StructuredCommand,
   isReadCommand,
 } from '@wetriip/contracts';
-import { PolicyLimits, evaluatePolicy, simulate } from '@wetriip/domain';
+import {
+  PolicyLimits,
+  bindProposal,
+  checkProposalFreshness,
+  evaluatePolicy,
+  hashAriState,
+  hashAuthority,
+  hashCommand,
+  hashSimulation,
+  simulate,
+} from '@wetriip/domain';
 import { Logger, M, metrics } from '@wetriip/observability';
 import { AuditLog } from '@wetriip/persistence';
-import { AUDIT_LOG, EVENT_BUS, LOGGER, PRISMA, RequestContext, clients } from '@wetriip/service-kit';
+import {
+  AUDIT_LOG,
+  EVENT_BUS,
+  LOGGER,
+  PRISMA,
+  RequestContext,
+  clients,
+  verifyStepUpProof,
+} from '@wetriip/service-kit';
 import { ExecutorService } from './executor.service';
 import { IntentService } from './intent.service';
 import { ToolsService } from './tools.service';
@@ -51,11 +69,28 @@ export class AgentService {
     private readonly executor: ExecutorService,
   ) {}
 
+  /**
+   * Platform-wide safety limits.
+   *
+   * `POLICY_FLOOR_RATE_ENABLED` was documented in `.env.example` and the policy
+   * engine supported `floorRate`, but nothing ever loaded it — so a deployment
+   * that believed it had a rate floor had none. Configuration that silently
+   * does nothing is worse than configuration that is absent, because somebody
+   * checked the box and stopped worrying.
+   */
   private get limits(): Partial<PolicyLimits> {
+    const floorEnabled = process.env.POLICY_FLOOR_RATE_ENABLED === 'true';
+    const floorRate = Number(process.env.POLICY_FLOOR_RATE);
     return {
       maxDiscountPct: Number(process.env.POLICY_MAX_DISCOUNT_PCT ?? 25),
       maxRateDeltaPct: Number(process.env.POLICY_MAX_RATE_DELTA_PCT ?? 20),
       maxBlastRadiusCells: Number(process.env.POLICY_MAX_BLAST_RADIUS_CELLS ?? 5000),
+      ...(floorEnabled && Number.isFinite(floorRate) && floorRate > 0
+        ? {
+            floorRate,
+            floorRateCurrency: process.env.POLICY_FLOOR_RATE_CURRENCY ?? null,
+          }
+        : {}),
     };
   }
 
@@ -67,8 +102,13 @@ export class AgentService {
   async ask(ctx: RequestContext, input: unknown): Promise<AgentAskResponse> {
     const req: AgentAskInput = AgentAskSchema.parse(input);
 
+    // Was findUnique by id alone — a session from another tenant would be
+    // adopted and every subsequent write would land under this caller's
+    // context. Ownership is checked before the id is used for anything.
     const session = req.sessionId
-      ? await this.prisma.agentSession.findUnique({ where: { id: req.sessionId } })
+      ? await this.prisma.agentSession.findFirst({
+          where: { id: req.sessionId, tenantId: ctx.tenantId, userId: ctx.userId },
+        })
       : null;
     const activeSession =
       session ??
@@ -283,11 +323,22 @@ export class AgentService {
       globalMaxAutonomy: this.globalAutonomy,
     });
 
+    // What this proposal was computed on. Re-taken at confirmation so nothing
+    // can execute against a world that moved after the human agreed to it.
+    const binding = bindProposal({
+      command,
+      cells,
+      simulation,
+      permissions: ctx.permissions,
+      propertyIds: ctx.propertyIds,
+    });
+
     const action = await this.persistAction(ctx, sessionId, {
       agent: agentFor(command),
       utterance,
       intent: command.kind,
       command,
+      binding,
       status: policy.allowed ? 'AWAITING_CONFIRMATION' : 'REJECTED',
       deterministic: opts.deterministic,
       modelId: opts.modelId,
@@ -321,8 +372,11 @@ export class AgentService {
     title?: string,
   ) {
     if (sessionId) {
+      // Tenant AND user. A session belongs to the person who opened it; the
+      // tenant check alone let a colleague continue somebody else's thread by
+      // guessing or copying an id.
       const existing = await this.prisma.agentSession.findFirst({
-        where: { id: sessionId, tenantId: ctx.tenantId },
+        where: { id: sessionId, tenantId: ctx.tenantId, userId: ctx.userId },
       });
       if (existing) return existing;
     }
@@ -356,26 +410,116 @@ export class AgentService {
       });
     }
 
-    if (row.requiresStepUp && !ctx.stepUpVerified && !opts.autoApproved) {
+    const command = row.command as unknown as StructuredCommand;
+
+    // ── 1. Step-up, bound to THIS action ──────────────────
+    // A boolean header said "MFA happened somewhere". A proof says which user,
+    // which tenant, which action, and until when — so it cannot be replayed
+    // against a different change.
+    if (row.requiresStepUp && !opts.autoApproved) {
+      const proof = verifyStepUpProof(ctx.stepUpProof, {
+        userId: ctx.userId,
+        tenantId: ctx.tenantId,
+        actionId,
+      });
+      if (!proof.ok) {
+        throw new DomainError({
+          code: 'STEP_UP_REQUIRED',
+          message: 'This change requires step-up authentication',
+          owner: 'Platform Security',
+          remediation: `Re-authenticate and confirm again. Reason: ${proof.reason}.`,
+          details: { actionId, riskLevel: row.riskLevel },
+        });
+      }
+    }
+
+    // ── 2. Re-authorize against CURRENT authority ─────────
+    // An approval must never carry authority. If the caller lost the permission
+    // between proposing and confirming, the change does not run.
+    const cells = await this.tools.cellsForCommand(ctx, command);
+    const simulation = simulate({ command, cells });
+    const policy = evaluatePolicy({
+      command,
+      actor: {
+        userId: ctx.userId,
+        role: ctx.role,
+        maxAutonomy: ctx.maxAutonomy,
+        organizationId: ctx.organizationId,
+        tenantId: ctx.tenantId,
+        permissions: ctx.permissions,
+        propertyIds: ctx.propertyIds,
+      },
+      simulation,
+      limits: this.limits,
+      globalMaxAutonomy: this.globalAutonomy,
+    });
+    if (!policy.allowed) {
       throw new DomainError({
-        code: 'STEP_UP_REQUIRED',
-        message: 'This change requires step-up authentication',
+        code: 'POLICY_DENIED',
+        message: policy.denialReason ?? 'This change is no longer permitted.',
         owner: 'Platform Security',
-        remediation: 'Re-authenticate with your second factor and confirm again.',
-        details: { actionId, riskLevel: row.riskLevel },
+        remediation:
+          'The proposal was allowed when it was made. Your authority or the platform limits changed since.',
+        details: { actionId, checks: policy.checks.filter((c) => !c.passed) },
       });
     }
 
-    const command = row.command as unknown as StructuredCommand;
+    // ── 3. Refuse a proposal the world moved out from under ──
+    const bound = row.binding as any;
+    if (bound?.commandHash) {
+      const verdict = checkProposalFreshness(bound, {
+        commandHash: hashCommand(command),
+        stateHash: hashAriState(cells),
+        simulationHash: hashSimulation(simulation),
+        authorityHash: hashAuthority(ctx.permissions, ctx.propertyIds),
+      });
+      if (verdict.stale && !opts.autoApproved) {
+        await this.prisma.agentAction
+          .updateMany({
+            where: { id: actionId, tenantId: ctx.tenantId, status: 'AWAITING_CONFIRMATION' },
+            data: { status: 'REJECTED', error: verdict.message ?? 'stale proposal' },
+          })
+          .catch(() => undefined);
+        throw new DomainError({
+          code: 'CONFLICT',
+          message: verdict.message ?? 'This proposal is no longer current.',
+          owner: 'Platform',
+          remediation: 'Ask again to see the change against the numbers as they are now.',
+          details: {
+            actionId,
+            staleness: verdict.kind,
+            projectedWhenProposed: (row.simulation as any)?.projections ?? null,
+            projectedNow: simulation.projections,
+          },
+        });
+      }
+    }
 
-    await this.prisma.agentAction.update({
-      where: { id: actionId },
+    // ── 4. Claim the action, atomically ───────────────────
+    // A read-then-write let two concurrent confirms both observe
+    // AWAITING_CONFIRMATION and both execute. The status is the lock: exactly
+    // one update can match, and the loser is told who won.
+    const claimed = await this.prisma.agentAction.updateMany({
+      where: {
+        id: actionId,
+        tenantId: ctx.tenantId,
+        status: { in: ['AWAITING_CONFIRMATION', 'APPROVED'] },
+      },
       data: {
         status: 'EXECUTING',
         confirmedAt: new Date(),
         confirmedBy: opts.autoApproved ? `policy:auto-level-3` : ctx.userId,
       },
     });
+    if (claimed.count !== 1) {
+      throw new DomainError({
+        code: 'CONFLICT',
+        message: 'This action was already confirmed by another request.',
+        owner: 'Platform',
+        remediation: 'Reload the action to see its current state.',
+        details: { actionId },
+      });
+    }
 
     try {
       const result =
@@ -442,9 +586,27 @@ export class AgentService {
   }
 
   async reject(ctx: RequestContext, actionId: string, reason: string): Promise<AgentActionView> {
-    const updated = await this.prisma.agentAction.update({
-      where: { id: actionId },
+    // Was an unconditional update by id: no tenant check, no state check. Any
+    // authenticated caller who learned an action id could reject somebody
+    // else's pending change, in another tenant, at any point in its life.
+    const claimed = await this.prisma.agentAction.updateMany({
+      where: {
+        id: actionId,
+        tenantId: ctx.tenantId,
+        status: { in: ['AWAITING_CONFIRMATION', 'APPROVED'] },
+      },
       data: { status: 'REJECTED', rejectedAt: new Date(), rejectReason: reason },
+    });
+    if (claimed.count !== 1) {
+      throw new DomainError({
+        code: 'CONFLICT',
+        message: 'That action is not awaiting confirmation, or does not belong to this tenant.',
+        owner: 'Platform',
+        details: { actionId },
+      });
+    }
+    const updated = await this.prisma.agentAction.findFirstOrThrow({
+      where: { id: actionId, tenantId: ctx.tenantId },
     });
     await this.bus.publish(
       'AgentActionRejected',
@@ -614,6 +776,7 @@ export class AgentService {
       requiresStepUp?: boolean;
       rejectReason?: string;
       result?: unknown;
+      binding?: unknown;
     },
   ): Promise<AgentActionView> {
     const row = await this.prisma.agentAction.create({
@@ -628,6 +791,7 @@ export class AgentService {
         intent: args.intent,
         command: args.command as any,
         policyDecision: (args.policyDecision ?? null) as any,
+        binding: (args.binding ?? null) as any,
         simulation: (args.simulation ?? null) as any,
         status: args.status as any,
         autonomyLevel: args.autonomyLevel,

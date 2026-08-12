@@ -282,10 +282,12 @@ export function CommandCenter({
     }
   }
 
-  async function confirmProposal(actionId: string) {
+  /** `requiresStepUp` decides whether we fetch a proof first. The proof is
+   *  bound to this action id and discarded immediately after use. */
+  async function confirmProposal(actionId: string, requiresStepUp = false) {
     setBusy(true);
     try {
-      const res = await api.confirm(actionId);
+      const res = await api.confirm(actionId, requiresStepUp);
       setTurns((t) => [
         ...t,
         {
@@ -700,7 +702,7 @@ function Proposal({
 }: {
   action: any;
   busy: boolean;
-  onConfirm: (id: string) => void;
+  onConfirm: (id: string, requiresStepUp: boolean) => void;
   onDiscard: (id: string) => void;
 }) {
   const sim = action.simulation;
@@ -764,7 +766,7 @@ function Proposal({
 
       {awaiting && (
         <div className="row" style={{ marginTop: 10 }}>
-          <button className="btn-primary btn-sm" disabled={busy} onClick={() => onConfirm(action.id)}>
+          <button className="btn-primary btn-sm" disabled={busy} onClick={() => onConfirm(action.id, Boolean(action.requiresStepUp))}>
             Confirm and apply
           </button>
           <button className="btn-sm" disabled={busy} onClick={() => onDiscard(action.id)}>

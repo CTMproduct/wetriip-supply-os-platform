@@ -12,15 +12,7 @@ import {
 import type { IdempotencyStore } from '@wetriip/domain';
 import { Logger, M, metrics } from '@wetriip/observability';
 import { AuditLog, toNumber, toStayDateString } from '@wetriip/persistence';
-import {
-  AUDIT_LOG,
-  EVENT_BUS,
-  IDEMPOTENCY,
-  LOGGER,
-  PRISMA,
-  RequestContext,
-  clients,
-} from '@wetriip/service-kit';
+import { AUDIT_LOG, EVENT_BUS, IDEMPOTENCY, LOGGER, PRISMA, RequestContext, clients, scopedIdempotencyKey } from '@wetriip/service-kit';
 
 /**
  * Booking saga.
@@ -53,7 +45,7 @@ export class BookingService {
 
     // ── 1. Idempotency, before anything observable happens ──
     const existing = await this.prisma.booking.findUnique({
-      where: { idempotencyKey: cmd.idempotencyKey },
+      where: { tenantId_idempotencyKey: { tenantId: ctx.tenantId, idempotencyKey: cmd.idempotencyKey } },
     });
     if (existing) {
       this.log.info('idempotent replay', {
@@ -64,7 +56,7 @@ export class BookingService {
       return this.toRef(existing);
     }
 
-    const claimed = await this.idempotency.begin(`booking:${cmd.idempotencyKey}`, 3600);
+    const claimed = await this.idempotency.begin(scopedIdempotencyKey(ctx.tenantId, 'booking', cmd.idempotencyKey), 3600);
     if (!claimed) {
       throw new DomainError({
         code: 'CONFLICT',
@@ -81,7 +73,7 @@ export class BookingService {
       ctx,
     );
     if (!revalidation.valid) {
-      await this.idempotency.release(`booking:${cmd.idempotencyKey}`);
+      await this.idempotency.release(scopedIdempotencyKey(ctx.tenantId, 'booking', cmd.idempotencyKey));
       const failed = revalidation.checks.filter((c: any) => !c.ok);
       throw new DomainError({
         code: failed.some((c: any) => c.code === 'TTL') ? 'OFFER_EXPIRED' : 'CONFLICT',
@@ -100,15 +92,34 @@ export class BookingService {
     // credit left to book it. Checked BEFORE the supplier is contacted, so a
     // partner over their limit never creates a reservation we then have to
     // unwind.
-    const credit = await clients.coreCommerce
-      .post<any>(`/internal/core/partners/${ctx.organizationId}/credit/decision`, ctx, {
-        amount: Number(offer.buyerAmount ?? 0),
-        currency: offer.buyerCurrency,
-      })
-      .catch(() => null);
+    //
+    // It used to `.catch(() => null)` and carry on. That is FAIL OPEN on money:
+    // a credit service that is down would let every booking through, and the
+    // first anyone knew would be a partner tens of thousands over their limit.
+    //
+    // Unknown credit is not approved credit.
+    let credit: any;
+    try {
+      credit = await clients.coreCommerce.post<any>(
+        `/internal/core/partners/${ctx.organizationId}/credit/decision`,
+        ctx,
+        { amount: Number(offer.buyerAmount ?? 0), currency: offer.buyerCurrency },
+      );
+    } catch (err) {
+      await this.idempotency.release(scopedIdempotencyKey(ctx.tenantId, 'booking', cmd.idempotencyKey));
+      throw new DomainError({
+        code: 'DEPENDENCY_UNAVAILABLE',
+        message: 'The credit line could not be checked, so this booking was not sent to the supplier.',
+        owner: 'Commercial',
+        remediation:
+          'Retry in a moment. If it persists, take prepayment instead — a booking placed without a credit check is unsecured exposure.',
+        details: { organizationId: ctx.organizationId, error: String(err) },
+        correlationId: ctx.correlationId,
+      });
+    }
 
     if (credit && !credit.allowed) {
-      await this.idempotency.release(`booking:${cmd.idempotencyKey}`);
+      await this.idempotency.release(scopedIdempotencyKey(ctx.tenantId, 'booking', cmd.idempotencyKey));
       throw new DomainError({
         code: 'POLICY_DENIED',
         message: credit.reason ?? 'The credit line does not cover this booking',
@@ -255,16 +266,43 @@ export class BookingService {
           reference,
           reason: 'Booking confirmed',
         })
-        .catch((err) =>
-          this.log.error('credit hold failed after confirmation', {
+        // A confirmed supplier booking whose credit hold failed is real exposure
+        // the ledger does not know about. It cannot be un-booked from here, so
+        // it is escalated: the booking keeps its confirmed status, and the
+        // failure is recorded loudly for reconciliation to pick up rather than
+        // buried in a log line.
+        .catch(async (err) => {
+          await this.prisma.booking
+            .update({
+              where: { id: booking.id },
+              data: {
+                creditStatus: 'HOLD_FAILED',
+                creditFailureReason: String(err),
+              },
+            })
+            .catch(() => undefined);
+          await this.audit
+            .record({
+              tenantId: ctx.tenantId,
+              actorType: 'SYSTEM',
+              actorId: 'booking',
+              action: 'booking.credit_hold_failed',
+              resourceType: 'Booking',
+              resourceId: booking.id,
+              after: { amount: credit.requested, currency: credit.currency, error: String(err) },
+              reason: 'Supplier confirmed but the credit hold did not land — unsecured exposure',
+              correlationId: ctx.correlationId,
+            })
+            .catch(() => undefined);
+          return this.log.error('credit hold failed after confirmation', {
             bookingId: booking.id,
             correlationId: ctx.correlationId,
             error: String(err),
-          }),
-        );
+          });
+        });
     }
 
-    await this.idempotency.complete(`booking:${cmd.idempotencyKey}`, {
+    await this.idempotency.complete(scopedIdempotencyKey(ctx.tenantId, 'booking', cmd.idempotencyKey), {
       bookingId: booking.id,
       status: nextStatus,
     });
@@ -370,7 +408,7 @@ export class BookingService {
 
     await this.transition(ctx, bookingId, 'CANCEL_PENDING', { reason });
 
-    const cancelKey = `cancel:${booking.idempotencyKey}`;
+    const cancelKey = scopedIdempotencyKey(ctx.tenantId, 'cancel', booking.idempotencyKey);
     const claimed = await this.idempotency.begin(cancelKey, 3600);
     if (!claimed) {
       const prior = await this.idempotency.get(cancelKey);

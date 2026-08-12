@@ -10,7 +10,7 @@
  * Seeding the tables directly would be faster and would prove nothing.
  */
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:3100';
-const EMAIL = process.env.SEED_USER || 'ops@wetriip.ai';
+const EMAIL = process.env.SEED_USER || 'pipe@wetriip.ai';
 
 async function json(res) {
   const text = await res.text();

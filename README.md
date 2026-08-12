@@ -73,7 +73,11 @@ console changes shape depending on who you are:
 | `melisa@caribehotels.co` | Revenue manager — rates, availability, promotions, distribution |
 | `gerencia@caribehotels.co` | General manager — the above plus **Team** |
 | `ecommerce@caribehotels.co` | E-commerce analyst — reads and proposes, writes nothing |
-| `ops@wetriip.ai` | Wetriip staff — adds **Platform**, the cross-tenant view |
+| `pipe@wetriip.ai` | Wetriip staff — adds **Platform**, the cross-tenant view |
+
+Email-only sign-in is a development shim and **authenticates nobody**. In
+production the process refuses to start without `OIDC_ISSUER`, a real step-up
+verifier and high-entropy secrets — see `assertProductionPosture`.
 
 ### Verify it
 
@@ -560,4 +564,6 @@ rate limiting, circuit breakers and bulkheads.
   documento**: los nueve servicios, los veinte motores, los 45 modelos, las 69
   rutas públicas, el front end, la observabilidad y qué está deliberadamente sin
   construir.
-- [`docs/adr/`](docs/adr/) — the nine decisions that shape everything else.
+- [`docs/adr/`](docs/adr/) — the ten decisions that shape everything else,
+  including [ADR-010](docs/adr/ADR-010-control-plane-hardening.md), which records
+  fifteen control-plane holes and what each one allowed.

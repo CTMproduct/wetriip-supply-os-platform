@@ -1,5 +1,11 @@
 # Wetriip Supply OS — working rules
 
+> **THE LLM MAY DECIDE WHAT THE USER MEANS.**
+> **IT MAY NEVER DECIDE WHAT THE USER IS ALLOWED TO DO,**
+> **WHAT STATE IS TRUE, OR WHETHER A SIDE EFFECT SUCCEEDED.**
+>
+> Every rule below is that sentence, made structurally impossible to violate.
+
 ## Non-negotiable
 
 1. **The LLM never modifies inventory, price, contracts or bookings.** Its only
@@ -47,6 +53,27 @@
 16. **Never report a notification as sent unless a provider accepted it.**
    `NOT_CONFIGURED` with the outstanding requirement is the honest state, and it
    is what the console must show.
+17. **Identity is signed, never asserted.** Internal services refuse context they
+   cannot verify. Never read authority from an unsigned header, and never treat
+   network position as authentication.
+18. **Step-up is a proof bound to one action**, never a boolean. If it could be
+   replayed against a different change, it is not step-up.
+19. **A proposal carries a binding, and confirmation re-checks everything.**
+   Authority, policy and the state the numbers came from are re-evaluated at
+   confirmation. An approval must never store authority.
+20. **State transitions are conditional updates, not read-then-write.** Guard on
+   the current status and assert exactly one row changed. Applies to
+   confirmations, rejections, bookings, group acceptance and credit.
+21. **When uncertainty touches money, fail closed.** Unknown credit is not
+   approved credit. A dependency that cannot answer means refuse, not proceed.
+22. **Every tool the assistant can call declares the permission it needs.** The
+   enforcement point is code, before the dispatch. A prompt is not a security
+   boundary.
+23. **Scope is a primitive, not a rule to remember.** Compose `propertyScope(ctx)`
+   into the query. Never `{ id, ...propertyScope(ctx) }` — the spread overwrites
+   the id and answers with a different row. Use `scopedPropertyWhere()`.
+24. **Idempotency keys are namespaced per tenant.** Two companies must never be
+   able to collide on the same key.
 
 ## Where things go
 
@@ -96,6 +123,12 @@ node scripts/smoke.js
 Do not enable a connection whose adapter is not certified. A stub that returns
 empty results is how a hotel ends up "connected" to a provider that has never
 sent a byte.
+
+## Before touching auth, scope or confirmation
+
+Read [ADR-010](docs/adr/ADR-010-control-plane-hardening.md) first. It records
+fifteen specific holes and what each one allowed. Reintroducing one of them is
+easy; the ADR exists so it cannot be done unknowingly.
 
 ## Adding a permission
 

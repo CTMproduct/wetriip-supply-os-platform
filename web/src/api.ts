@@ -24,7 +24,16 @@ export class ApiFailure extends Error {
 }
 
 let token: string | null = localStorage.getItem('wt_token');
-let stepUp = false;
+
+/**
+ * The step-up proof for the ONE action being confirmed.
+ *
+ * It used to be `stepUp = true`, sent as a header — a boolean the browser
+ * asserted about itself, which unlocked every high-risk action on the platform.
+ * It is now a signed, short-lived token the server issues per action and
+ * verifies against that action, and it is cleared the moment it is used.
+ */
+let stepUpProof: string | null = null;
 
 export function setToken(t: string | null) {
   token = t;
@@ -34,8 +43,8 @@ export function setToken(t: string | null) {
 export function getToken() {
   return token;
 }
-export function setStepUp(v: boolean) {
-  stepUp = v;
+export function setStepUpProof(proof: string | null) {
+  stepUpProof = proof;
 }
 
 /**
@@ -98,7 +107,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     headers: {
       'content-type': 'application/json',
       ...(token ? { authorization: `Bearer ${token}` } : {}),
-      ...(stepUp ? { 'x-wetriip-step-up': 'true' } : {}),
+      ...(stepUpProof ? { 'x-wetriip-step-up': stepUpProof } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -203,7 +212,24 @@ export const api = {
   partners: (propertyId: string) =>
     get<any[]>(`/api/v1/properties/${propertyId}/partners`),
   ask: (body: unknown) => request<any>('POST', '/api/v1/agent/ask', body),
-  confirm: (id: string) => request<any>('POST', `/api/v1/agent/actions/${id}/confirm`, {}),
+  /** Ask for a proof bound to this action, then confirm with it and drop it. */
+  stepUp: (actionId: string) =>
+    request<{ proof: string; expiresInSeconds: number; amr: string[] }>(
+      'POST',
+      '/api/v1/auth/step-up',
+      { actionId },
+    ),
+  confirm: async (id: string, withStepUp = false) => {
+    if (withStepUp) {
+      const { proof } = await api.stepUp(id);
+      setStepUpProof(proof);
+    }
+    try {
+      return await request<any>('POST', `/api/v1/agent/actions/${id}/confirm`, {});
+    } finally {
+      setStepUpProof(null);
+    }
+  },
   reject: (id: string, reason: string) =>
     request<any>('POST', `/api/v1/agent/actions/${id}/reject`, { reason }),
   rollback: (id: string, reason: string) =>

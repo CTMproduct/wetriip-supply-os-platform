@@ -19,6 +19,7 @@ export * from './pricing';
 export * from './offer-signature';
 export * from './policy';
 export * from './simulation';
+export * from './proposal';
 export * from './intent-grammar';
 export * from './diagnostics';
 export * from './revenue';

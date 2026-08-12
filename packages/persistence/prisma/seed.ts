@@ -119,8 +119,8 @@ async function main() {
     maxAutonomy: 2,
   });
   await upsertUser(tenant.id, platformOrg.id, {
-    email: 'ops@wetriip.ai',
-    name: 'Wetriip Ops',
+    email: 'pipe@wetriip.ai',
+    name: 'Pipe — Wetriip',
     role: 'SUPER_ADMIN',
     maxAutonomy: 3,
   });

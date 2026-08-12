@@ -11,6 +11,7 @@ import {
   toStayDate,
 } from '@wetriip/contracts';
 import { RequestContext, clients } from '@wetriip/service-kit';
+import { authorizeTool } from './tool-authority';
 
 /**
  * The assistant's read surface.
@@ -298,6 +299,11 @@ export const CHAT_TOOLS: ToolDefinition[] = [
 @Injectable()
 export class ChatToolsService {
   async run(ctx: RequestContext, name: string, input: any): Promise<ToolOutcome> {
+    // ONE enforcement point, before the switch. The model chooses which tool to
+    // call; it does not get to decide whether the caller may call it. An
+    // unknown tool is refused rather than falling through.
+    authorizeTool(ctx, name, input);
+
     switch (name) {
       case 'list_properties': {
         const rows = await clients.coreCommerce.get<PropertyRef[]>(
