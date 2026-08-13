@@ -565,6 +565,9 @@ rate limiting, circuit breakers and bulkheads.
 - [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md) — CTO Technical Blueprint v1.0: C4
   views, ERD, ARI schema, event catalog, API contracts, security model, SLOs and
   the sprint roadmap.
+- [`docs/QA.md`](docs/QA.md) — **cincuenta preguntas y respuestas**, incluidas las
+  incómodas: qué no está construido, qué encontró un review externo, y cuál es el
+  riesgo abierto más grande.
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — **la arquitectura completa en un solo
   documento**: los nueve servicios, los veinte motores, los 45 modelos, las 69
   rutas públicas, el front end, la observabilidad y qué está deliberadamente sin
