@@ -65,6 +65,11 @@ pipeline (adapter → canonical events → ledger → effective ARI):
 npm run bootstrap:ari
 ```
 
+`npm run dev` serves **both** the API and the console on port 3100. If the
+console loads but sign-in reports *"The platform is not responding"*, the API is
+not running behind that address — that message is the platform telling you which
+of the two is missing, rather than a status code.
+
 Open <http://localhost:3100> and sign in as one of the seeded people — the
 console changes shape depending on who you are:
 

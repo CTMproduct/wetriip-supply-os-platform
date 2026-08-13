@@ -123,20 +123,61 @@ export function clearCache() {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers: {
-      'content-type': 'application/json',
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-      ...(stepUpProof ? { 'x-wetriip-step-up': stepUpProof } : {}),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method,
+      headers: {
+        'content-type': 'application/json',
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(stepUpProof ? { 'x-wetriip-step-up': stepUpProof } : {}),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    // The request never left the browser: no server, no network, no DNS.
+    throw new ApiFailure({
+      code: 'DEPENDENCY_UNAVAILABLE',
+      message: 'The platform is not responding.',
+      owner: 'Platform',
+      remediation: 'Check that the API is running (npm run dev) and reachable from this browser.',
+    });
+  }
+
   const text = await res.text();
-  const parsed = text ? JSON.parse(text) : null;
+  let parsed: any = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    // A dev-server proxy, a load balancer or a crash page answers in HTML.
+    // Parsing it as JSON used to throw a raw SyntaxError at the caller, which
+    // told the operator nothing about what had actually happened.
+    parsed = null;
+  }
+
   if (!res.ok) {
+    // A platform error always carries `error`. Its ABSENCE means the response
+    // did not come from the platform at all — the proxy could not reach it.
+    // "Request failed (500)" is a status code, not a cause, and sending an
+    // operator to look for a bug in the login when the API is simply down is
+    // the most expensive kind of unhelpful.
+    if (parsed?.error) throw new ApiFailure(parsed.error);
     throw new ApiFailure(
-      parsed?.error ?? { code: 'INTERNAL', message: `Request failed (${res.status})` },
+      res.status >= 500
+        ? {
+            code: 'DEPENDENCY_UNAVAILABLE',
+            message: 'The platform is not responding.',
+            owner: 'Platform',
+            remediation:
+              `The request to ${path} came back ${res.status} with no platform error attached, ` +
+              'which usually means the API is not running behind this address. Start it with npm run dev.',
+          }
+        : {
+            code: 'INTERNAL',
+            message: `The platform answered ${res.status} without explaining why.`,
+            owner: 'Platform',
+            remediation: `Path: ${path}. Check the service logs for this request.`,
+          },
     );
   }
   return parsed as T;

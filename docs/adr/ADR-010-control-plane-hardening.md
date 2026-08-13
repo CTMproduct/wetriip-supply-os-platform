@@ -216,6 +216,18 @@ and left the old one ACTIVE with SUPER_ADMIN and every permission on the
 platform. The seed now retires superseded platform accounts — disabled, not
 deleted, because the audit trail must still resolve the name.
 
+### 18. A dead back end reported itself as a bug in the login
+
+With the API down, a dev-server proxy or a load balancer answers 500 with an
+empty or HTML body. The client turned that into `Request failed (500)` — a
+status code with no cause, which sends an operator looking for a defect in
+authentication when the API is simply not running. Parsing an HTML error page as
+JSON also threw a raw `SyntaxError` at the caller.
+
+A response carrying no platform `error` object did not come from the platform.
+It now says so, names the path, and says how to start the API. Rule 11, applied
+to the one screen where a confusing failure costs the most.
+
 ## What is still not done
 
 - **OIDC/JWKS is not implemented.** The posture gate refuses to start production
