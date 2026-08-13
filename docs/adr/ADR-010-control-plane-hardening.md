@@ -194,6 +194,28 @@ a 404 — telling an operator the platform is broken when the answer is "no" sen
 them to the wrong problem. `settle()` keeps the original error so a caller that
 must fail can fail with the real cause.
 
+### 16. The console could render you as somebody else
+
+The last-known-good cache added for resilience covered `/api/v1/me`. When the
+platform was unreachable the console answered "who am I" from cache — so
+signing in as one user could land you in the previous user's console, with
+*their* permission set deciding which screens you were given. It also never
+cleared between sessions, so one person's rates and partners survived into the
+next person's browser.
+
+A stale rate with its age on it is useful. A stale identity is a lie. Identity
+and access-control reads now fail loudly, and changing session clears the cache.
+
+This one was self-inflicted — introduced by the resilience work in ADR-009 and
+found because a platform administrator could not sign in as themselves.
+
+### 17. A renamed platform account left an orphan with full authority
+
+The seed keys on email, so changing a platform address CREATED a second account
+and left the old one ACTIVE with SUPER_ADMIN and every permission on the
+platform. The seed now retires superseded platform accounts — disabled, not
+deleted, because the audit trail must still resolve the name.
+
 ## What is still not done
 
 - **OIDC/JWKS is not implemented.** The posture gate refuses to start production

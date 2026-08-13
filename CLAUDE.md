@@ -74,6 +74,10 @@
    the id and answers with a different row. Use `scopedPropertyWhere()`.
 24. **Idempotency keys are namespaced per tenant.** Two companies must never be
    able to collide on the same key.
+25. **Identity is never served from cache.** The console may show a stale rate
+   with its age; it may never show a stale *user*. `/api/v1/me`, `/users` and
+   `/admin/*` fail loudly instead of falling back, and switching session clears
+   the cache so one person's data cannot survive into another's console.
 
 ## Where things go
 

@@ -39,6 +39,10 @@ export function setToken(t: string | null) {
   token = t;
   if (t) localStorage.setItem('wt_token', t);
   else localStorage.removeItem('wt_token');
+  // Whoever is arriving or leaving, the previous session's cached rates,
+  // partners and bookings go with them. One person's data must not survive
+  // into another person's console.
+  clearCache();
 }
 export function getToken() {
   return token;
@@ -61,6 +65,23 @@ export function setStepUpProof(proof: string | null) {
  */
 const CACHE_PREFIX = 'wt_cache:';
 const CACHE_TTL_MS = 12 * 3_600_000;
+
+/**
+ * Paths that must NEVER be answered from cache.
+ *
+ * Identity is the obvious one and the reason this list exists: a cached
+ * `/api/v1/me` meant that when the platform was unreachable the console would
+ * render you as whoever signed in last — with THEIR permissions deciding which
+ * screens you get. Signing in as somebody else and landing in the previous
+ * user's console is not a degraded experience, it is the wrong answer.
+ *
+ * Stale rates are useful. A stale identity is a lie.
+ */
+const NEVER_CACHED = ['/api/v1/me', '/api/v1/users', '/api/v1/admin/'];
+
+function cacheable(path: string): boolean {
+  return !NEVER_CACHED.some((p) => path.startsWith(p));
+}
 
 export interface Staleness {
   stale: boolean;
@@ -131,10 +152,14 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 async function get<T>(path: string): Promise<T> {
   try {
     const value = await request<T>('GET', path);
-    writeCache(path, value);
+    if (cacheable(path)) writeCache(path, value);
     staleness.set(path, { stale: false, fetchedAt: Date.now(), reason: null });
     return value;
   } catch (err) {
+    // Identity and access-control reads fail loudly. There is no acceptable
+    // stale answer to "who am I" or "who may do what".
+    if (!cacheable(path)) throw err;
+
     const transport = !(err instanceof ApiFailure);
     const serverFault =
       err instanceof ApiFailure &&

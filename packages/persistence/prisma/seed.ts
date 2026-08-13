@@ -125,6 +125,26 @@ async function main() {
     maxAutonomy: 3,
   });
 
+  // Retire platform accounts the seed no longer declares.
+  //
+  // `upsertUser` keys on email, so renaming a platform address CREATES a second
+  // account and leaves the old one behind — with SUPER_ADMIN and every
+  // permission on the platform. An abandoned account that can see and change
+  // every tenant is exactly what must not linger, so it is disabled rather than
+  // deleted: the audit trail still has to resolve its name.
+  const retired = await prisma.user.updateMany({
+    where: {
+      tenantId: tenant.id,
+      organizationId: platformOrg.id,
+      status: 'ACTIVE',
+      email: { notIn: ['pipe@wetriip.ai'] },
+    },
+    data: { status: 'DISABLED', active: false, disabledAt: new Date(), disabledBy: 'seed' },
+  });
+  if (retired.count > 0) {
+    console.log(`> retired ${retired.count} superseded platform account(s)`);
+  }
+
   // ── Properties ─────────────────────────────────────────
   const cartagena = await upsertProperty(tenant.id, hotelOrg.id, {
     code: 'WT-CTG-001',
@@ -542,6 +562,7 @@ async function main() {
 
   console.log(`> seeded tenant ${tenant.code}`);
   console.log('> sign in with melisa@caribehotels.co (Revenue Manager, autonomy 2)');
+  console.log('> or pipe@wetriip.ai (Wetriip platform administrator)');
   console.log('> next: start the server, then run  npm run bootstrap:ari');
 }
 

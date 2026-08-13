@@ -261,7 +261,13 @@ function Login({ onLogin }: { onLogin: (me: any) => void }) {
       setToken(res.token);
       onLogin(await api.me());
     } catch (err) {
-      setError(err instanceof ApiFailure ? `${err.error.message}. ${err.error.remediation ?? ''}` : String(err));
+      // Join without double-punctuating: the message usually ends in a full
+      // stop already, and "disabled.. Ask your manager" reads like a defect.
+      setError(
+        err instanceof ApiFailure
+          ? [err.error.message, err.error.remediation].filter(Boolean).join(' ')
+          : String(err),
+      );
     } finally {
       setBusy(false);
     }
