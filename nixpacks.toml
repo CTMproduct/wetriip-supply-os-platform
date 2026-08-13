@@ -1,0 +1,9 @@
+# Node 20+ is required by the workspace engines field. Nixpacks otherwise picks
+# whatever its default image ships, and a silent downgrade fails at runtime
+# rather than at build, which is the worst place to find out.
+[phases.setup]
+nixPkgs = ["nodejs_20"]
+
+[phases.install]
+# The repo is npm workspaces; a plain `npm ci` at the root wires every package.
+cmds = ["npm ci --include=dev"]

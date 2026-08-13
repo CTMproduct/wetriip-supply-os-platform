@@ -60,7 +60,38 @@ export class AuthService {
     return process.env.SESSION_SECRET ?? process.env.OFFER_SIGNING_SECRET ?? 'change-me-in-production';
   }
 
+  /**
+   * Whether the development sign-in is switched on.
+   *
+   * This has to be opt-in, and the reason is deployment. Email-only sign-in
+   * authenticates NOBODY: it looks up an address and issues a session. That is
+   * fine on a laptop and catastrophic on a public URL, because the seeded
+   * addresses are printed in the README — anyone who read it can sign in as the
+   * platform administrator.
+   *
+   * The production posture gate already refuses to boot without OIDC. This
+   * closes the gap it does not cover: a *staging* deployment that is publicly
+   * reachable. Off by default, so exposing it is always a decision somebody
+   * made on purpose.
+   */
+  static devLoginEnabled(): boolean {
+    return process.env.DEV_LOGIN_ENABLED === 'true';
+  }
+
   async login(email: string): Promise<{ token: string; claims: SessionClaims }> {
+    if (!AuthService.devLoginEnabled()) {
+      throw new DomainError({
+        code: 'PERMISSION',
+        message: 'Sign-in is not available on this deployment.',
+        owner: 'Platform Security',
+        remediation:
+          'This build has no identity provider configured, and the development ' +
+          'sign-in is switched off because it authenticates nobody. Set OIDC_ISSUER ' +
+          'for a real deployment, or DEV_LOGIN_ENABLED=true to open a demo — which ' +
+          'lets anyone who knows a seeded address in as that user.',
+      });
+    }
+
     const user = await this.prisma.user.findFirst({
       where: { email },
       include: { organization: true },

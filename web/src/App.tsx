@@ -252,6 +252,11 @@ function Login({ onLogin }: { onLogin: (me: any) => void }) {
   const [email, setEmail] = useState('melisa@caribehotels.co');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [posture, setPosture] = useState<any>(null);
+
+  useEffect(() => {
+    api.posture().then(setPosture).catch(() => undefined);
+  }, []);
 
   async function submit() {
     setBusy(true);
@@ -300,9 +305,28 @@ function Login({ onLogin }: { onLogin: (me: any) => void }) {
             {error}
           </p>
         )}
+        {/* Said before anyone signs in, not after. On a public URL this is the
+            single most important fact about the deployment. */}
+        {posture?.devSignIn && !posture?.identityProvider && (
+          <p
+            className="caption"
+            style={{
+              marginTop: 16,
+              padding: '10px 12px',
+              border: '1px solid var(--color-warning)',
+              color: 'var(--color-warning)',
+              borderRadius: 6,
+            }}
+          >
+            ⚠ Este entorno usa el acceso de desarrollo: <strong>no autentica a nadie</strong>.
+            Cualquiera que conozca una dirección sembrada entra como ese usuario. No cargue datos
+            reales.
+          </p>
+        )}
         <p className="caption" style={{ marginTop: 16 }}>
-          Development sign-in. Production terminates OIDC at the gateway; this screen never handles a
-          password.
+          {posture?.identityProvider
+            ? 'Autenticación federada. Esta pantalla nunca maneja una contraseña.'
+            : 'Acceso de desarrollo. En producción el gateway termina OIDC; esta pantalla nunca maneja una contraseña.'}
         </p>
       </div>
     </div>

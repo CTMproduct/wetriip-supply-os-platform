@@ -270,6 +270,70 @@ they are reading.
 
 ---
 
+## Deploying to Railway
+
+The repository carries everything Railway needs: `railway.json` (build, start,
+health check), `nixpacks.toml` (Node 20) and `scripts/release.js`, which applies
+migrations before the process starts serving and prints what kind of deployment
+this is into the deploy log.
+
+**1.** New project → *Deploy from GitHub repo* → this repository.
+
+**2.** Add a **Postgres** database to the project.
+
+**3.** Set these variables on the app service:
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
+| `NODE_ENV` | `staging` |
+| `SESSION_SECRET` | 48+ random characters |
+| `OFFER_SIGNING_SECRET` | 48+ random characters, different |
+| `INTERNAL_SIGNING_SECRET` | 48+ random characters, different again |
+| `DEV_LOGIN_ENABLED` | `true` — **read the warning below first** |
+| `SEED_ON_DEPLOY` | `true` for the first deploy, then `false` |
+| `CONNECTIVITY_PULL_ENABLED` | `true` |
+
+`PORT` is injected by Railway and the host reads it. Do not set it.
+
+**4.** Generate a public domain. The console and the API are served on the same
+port, so one URL is all you need.
+
+> ### A public deployment of this has no authentication
+>
+> `DEV_LOGIN_ENABLED=true` accepts **any seeded email address with no
+> credential**, and those addresses are printed in this README. Anyone with the
+> URL can sign in as the platform administrator.
+>
+> That is acceptable for a demo carrying seed data — three invented hotels and
+> two invented agencies. It is **not** acceptable for real hotels, real rates or
+> real bookings, and the platform says so in three places: the deploy log, the
+> login screen, and `GET /api/v1/auth/posture`.
+>
+> Leaving `DEV_LOGIN_ENABLED` unset closes sign-in entirely, which is the right
+> setting the moment the data stops being invented.
+
+**`NODE_ENV=production` will refuse to boot** until OIDC, a step-up verifier and
+strong secrets are configured — `assertProductionPosture()` exits non-zero with
+the list. That is deliberate: the guard exists so an unauthenticated production
+deployment is impossible to do by accident.
+
+### Verifying a deployment
+
+```bash
+curl https://<your-domain>/healthz
+```
+
+```bash
+curl https://<your-domain>/api/v1/auth/posture
+```
+
+The second one answers `devSignIn`, `identityProvider`, `environment` and
+`stepUpVerifier` without authenticating — so you can check what a deployment is
+from outside it.
+
+---
+
 ## Who gets in, and what they may touch
 
 A hotel is not one person, so the extranet is not one login. The permission is

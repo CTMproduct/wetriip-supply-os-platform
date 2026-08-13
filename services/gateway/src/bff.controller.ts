@@ -88,6 +88,23 @@ export class BffController {
 
   // ── Session ──────────────────────────────────────────────
 
+  /**
+   * What this deployment is, before anyone signs in.
+   *
+   * The login screen has to be able to say "this instance is open" without
+   * first authenticating — otherwise the only people who learn it are the ones
+   * who already got in.
+   */
+  @Get('auth/posture')
+  posture() {
+    return {
+      devSignIn: AuthService.devLoginEnabled(),
+      identityProvider: process.env.OIDC_ISSUER ? 'oidc' : null,
+      environment: process.env.NODE_ENV ?? 'development',
+      stepUpVerifier: Boolean(process.env.STEP_UP_VERIFIER),
+    };
+  }
+
   @Post('auth/login')
   login(@Body() body: { email: string }) {
     return this.auth.login(body?.email ?? '');

@@ -67,6 +67,18 @@ export function productionFindings(env: NodeJS.ProcessEnv = process.env): Postur
     });
   }
 
+  // Belt and braces: OIDC missing already fails above, but an operator who set
+  // OIDC_ISSUER and ALSO left the development sign-in on has left a second,
+  // unauthenticated door open next to the real one.
+  if (env.DEV_LOGIN_ENABLED === 'true') {
+    findings.push({
+      setting: 'DEV_LOGIN_ENABLED',
+      problem:
+        'is on, which accepts any known email address with no credential — alongside whatever real identity provider is configured',
+      fix: 'Remove it. The development sign-in must never be reachable in production.',
+    });
+  }
+
   if (env.INTERNAL_AUTH_REQUIRED === 'false') {
     findings.push({
       setting: 'INTERNAL_AUTH_REQUIRED',

@@ -222,6 +222,7 @@ async function get<T>(path: string): Promise<T> {
 }
 
 export const api = {
+  posture: () => request<any>('GET', '/api/v1/auth/posture'),
   login: (email: string) => request<any>('POST', '/api/v1/auth/login', { email }),
   me: () => get<any>('/api/v1/me'),
   overview: () => get<any>('/api/v1/overview'),
