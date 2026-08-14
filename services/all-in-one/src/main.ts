@@ -45,6 +45,12 @@ class AllInOneModule {}
 
 const port = Number(process.env.PORT ?? DEFAULT_PORTS.gateway);
 
+// The all-in-one host is the demo topology. Keep the production guard intact,
+// but open seeded email sign-in when no real identity provider is configured.
+if (!process.env.OIDC_ISSUER && process.env.NODE_ENV !== 'production') {
+  process.env.DEV_LOGIN_ENABLED = process.env.DEV_LOGIN_ENABLED ?? 'true';
+}
+
 // Every inter-service client resolves to this process. Setting them here
 // rather than in .env keeps the two topologies from drifting apart.
 for (const svc of SERVICES) {
