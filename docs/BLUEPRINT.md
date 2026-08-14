@@ -1,4 +1,4 @@
-# Wetriip Supply OS — CTO Technical Blueprint v1.0
+# Wetriip Supply Extranet OS — CTO Technical Blueprint v1.0
 
 Status: implemented and running. Every section below describes code in this
 repository, not a proposal. Where something is deliberately not built yet it is
@@ -69,7 +69,7 @@ set of things a mistaken command gets wrong.
               SiteMinder · Dingus · Cloudbeds · DerbySoft · canonical JSON
 ```
 
-Supply OS owns the hotel side of the graph: what exists, how much is left, what
+Supply Extranet OS owns the hotel side of the graph: what exists, how much is left, what
 it costs, who may buy it, and whether a booking succeeded. Transfers and
 activities are sibling systems behind the same graph.
 

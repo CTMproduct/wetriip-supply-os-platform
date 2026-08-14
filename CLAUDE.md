@@ -1,4 +1,4 @@
-# Wetriip Supply OS — working rules
+# Wetriip Supply Extranet OS — working rules
 
 > **THE LLM MAY DECIDE WHAT THE USER MEANS.**
 > **IT MAY NEVER DECIDE WHAT THE USER IS ALLOWED TO DO,**

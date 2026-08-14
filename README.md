@@ -1,4 +1,4 @@
-# Wetriip Supply OS
+# Wetriip Supply Extranet OS
 
 **The agentic operating system for travel supply.**
 
@@ -321,7 +321,7 @@ deployment is impossible to do by accident.
 ### Verifying a deployment
 
 ```bash
-curl https://<your-domain>/healthz
+curl https://<your-domain>/health/live
 ```
 
 ```bash

@@ -2,7 +2,7 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "wetriip-supply-os",
+      "name": "wetriip-supply-extranet-os",
       "runtimeExecutable": "node",
       "runtimeArgs": ["services/all-in-one/dist/all-in-one/src/main.js"],
       "port": 3100

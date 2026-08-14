@@ -145,7 +145,7 @@ function extractJson(text: string): any | null {
   }
 }
 
-const SYSTEM_PROMPT = `You are the intent router of Wetriip Supply OS, a hotel distribution platform.
+const SYSTEM_PROMPT = `You are the intent router of Wetriip Supply Extranet OS, a hotel distribution platform.
 
 Your ONLY output is JSON. You do not have tools. You cannot change prices, inventory, contracts or bookings — a separate deterministic system validates, simulates, authorises and executes everything. Your job is to express the user's request as a StructuredCommand, or to say clearly that you cannot.
 

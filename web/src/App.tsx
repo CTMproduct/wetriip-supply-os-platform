@@ -285,7 +285,7 @@ function Login({ onLogin }: { onLogin: (me: any) => void }) {
           <Isotype size={44} />
           <Wordmark size="1.5rem" color="var(--color-text)" />
         </div>
-        <h3 style={{ marginBottom: 4 }}>Supply OS</h3>
+        <h3 style={{ marginBottom: 4 }}>Supply Extranet OS</h3>
         <p className="caption" style={{ marginBottom: 18 }}>
           The agentic operating system for travel supply.
         </p>

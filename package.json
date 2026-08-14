@@ -2,7 +2,7 @@
   "name": "wetriip-supply-os",
   "version": "0.1.0",
   "private": true,
-  "description": "Wetriip Supply OS \u2014 The Agentic Operating System for Travel Supply. Distributed service topology built around failure isolation: the connectivity fleet, the ARI ledger, search, booking and the agent control plane scale and fail independently.",
+  "description": "Wetriip Supply Extranet OS \u2014 The Agentic Operating System for Travel Supply. Distributed service topology built around failure isolation: the connectivity fleet, the ARI ledger, search, booking and the agent control plane scale and fail independently.",
   "engines": {
     "node": ">=20"
   },

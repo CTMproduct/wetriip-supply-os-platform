@@ -1,4 +1,4 @@
-# Wetriip Supply OS — preguntas y respuestas
+# Wetriip Supply Extranet OS — preguntas y respuestas
 
 Las preguntas que hacen un CTO, un hotel, una agencia, un inversionista y un
 ingeniero nuevo. Incluidas las incómodas. Cada respuesta está anclada en código
